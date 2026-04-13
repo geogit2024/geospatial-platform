@@ -4,5 +4,7 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 startCommand = "minio server /data --console-address :9001"
+healthcheckPath = "/minio/health/live"
+healthcheckTimeout = 60
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
