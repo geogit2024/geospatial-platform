@@ -1,7 +1,7 @@
 # Railway configuration — API Service (root service)
 [build]
 builder = "dockerfile"
-dockerfilePath = "api/Dockerfile"
+dockerfilePath = "Dockerfile.api"
 buildCommand = ""
 
 [deploy]
