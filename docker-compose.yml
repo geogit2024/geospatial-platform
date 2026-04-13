@@ -1,0 +1,191 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Geospatial Image Publishing Platform — Docker Compose (Development / MVP)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#  Services:
+#    postgres    — metadata database
+#    redis       — event queue (Redis Streams)
+#    minio       — S3-compatible object storage
+#    api         — FastAPI orchestration service
+#    worker      — GDAL processing + GeoServer publication
+#    geoserver   — OGC services (WMS / WMTS / WCS)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-common-env: &common-env
+  STORAGE_BACKEND: minio
+  STORAGE_ENDPOINT: http://minio:9000
+  STORAGE_ACCESS_KEY: minioadmin
+  STORAGE_SECRET_KEY: minioadmin
+  STORAGE_BUCKET_RAW: raw-images
+  STORAGE_BUCKET_PROCESSED: processed-images
+  REDIS_URL: redis://redis:6379/0
+  REDIS_STREAM_UPLOADED: image:uploaded
+  REDIS_STREAM_PROCESSED: image:processed
+  REDIS_CONSUMER_GROUP: workers
+  GEOSERVER_URL: http://geoserver:8080/geoserver
+  GEOSERVER_ADMIN_USER: admin
+  GEOSERVER_ADMIN_PASSWORD: geoserver
+  GEOSERVER_WORKSPACE: geoimages
+  GEOSERVER_DATA_DIR: /opt/geoserver_data
+  DATABASE_URL: postgresql+asyncpg://geo:geo@postgres:5432/geodb
+  TARGET_CRS: EPSG:4326
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: geo
+      POSTGRES_PASSWORD: geo
+      POSTGRES_DB: geodb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geo -d geodb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - geonet
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - geonet
+
+  # ── MinIO (S3-compatible object storage) ───────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - geonet
+
+  # ── MinIO bucket initializer ───────────────────────────────────────────────
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing local/raw-images &&
+        mc mb --ignore-existing local/processed-images &&
+        mc anonymous set download local/processed-images &&
+        echo 'MinIO buckets initialized'
+      "
+    networks:
+      - geonet
+
+  # ── GeoServer ──────────────────────────────────────────────────────────────
+  geoserver:
+    image: docker.osgeo.org/geoserver:2.25.x
+    environment:
+      GEOSERVER_ADMIN_PASSWORD: geoserver
+      GEOSERVER_ADMIN_USER: admin
+      INITIAL_MEMORY: 512M
+      MAXIMUM_MEMORY: 2G
+      GEOWEBCACHE_CACHE_DIR: /opt/geoserver/data_dir/gwc
+    volumes:
+      - geoserver_data:/opt/geoserver/data_dir
+      - geoserver_cog:/opt/geoserver_data   # Shared with worker
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/geoserver/web/"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    networks:
+      - geonet
+
+  # ── FastAPI (Orchestration API) ────────────────────────────────────────────
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    environment:
+      <<: *common-env
+      API_SECRET_KEY: changeme-dev
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    networks:
+      - geonet
+    restart: unless-stopped
+
+  # ── GDAL Worker ─────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    environment:
+      <<: *common-env
+      GDAL_CACHEMAX: "512"
+    volumes:
+      - geoserver_cog:/opt/geoserver_data   # Shared with GeoServer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      geoserver:
+        condition: service_healthy
+    networks:
+      - geonet
+    restart: unless-stopped
+    deploy:
+      replicas: 1   # Increase for horizontal scaling
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volumes
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  geoserver_data:
+  geoserver_cog:     # Shared volume: worker writes COG, GeoServer reads
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  geonet:
+    driver: bridge

@@ -1,0 +1,69 @@
+name: Deploy — Railway Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to deploy (api | worker | geoserver | all)"
+        required: true
+        default: "all"
+
+env:
+  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+jobs:
+  deploy-api:
+    name: Deploy API
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'push' ||
+      github.event.inputs.service == 'api' ||
+      github.event.inputs.service == 'all'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy API to Railway
+        run: railway up --service api --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  deploy-worker:
+    name: Deploy Worker
+    runs-on: ubuntu-latest
+    needs: deploy-api
+    if: >
+      github.event_name == 'push' ||
+      github.event.inputs.service == 'worker' ||
+      github.event.inputs.service == 'all'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy Worker to Railway
+        run: railway up --service worker --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  deploy-geoserver:
+    name: Deploy GeoServer
+    runs-on: ubuntu-latest
+    if: >
+      github.event.inputs.service == 'geoserver' ||
+      github.event.inputs.service == 'all'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy GeoServer to Railway
+        run: railway up --service geoserver --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

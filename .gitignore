@@ -1,0 +1,47 @@
+# Environment
+.env
+.env.local
+.env.production
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+env/
+.cache/
+
+# Node (WebGIS frontend if added later)
+node_modules/
+.next/
+dist/
+
+# Docker
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# GeoServer data (large binary, managed via volume)
+geoserver/data_dir/
+
+# Secrets
+*.pem
+*.key
+service-account*.json
+credentials*.json

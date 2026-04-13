@@ -1,0 +1,9 @@
+# Railway configuration — GDAL Worker Service
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python3 worker.py"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5

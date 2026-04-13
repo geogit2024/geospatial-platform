@@ -1,0 +1,11 @@
+# Railway configuration — GeoServer Service
+[build]
+builder = "image"
+image = "docker.osgeo.org/geoserver:2.25.x"
+
+[deploy]
+startCommand = ""
+healthcheckPath = "/geoserver/web/"
+healthcheckTimeout = 120
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
