@@ -1,3 +1,3 @@
 FROM minio/minio:latest
-EXPOSE 9000 9001
-CMD ["server", "/data", "--console-address", ":9001"]
+# Use ENTRYPOINT to override — harder to override than CMD
+ENTRYPOINT ["minio", "server", "/data", "--console-address", ":9001"]
