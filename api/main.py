@@ -12,7 +12,10 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    try:
+        await init_db()
+    except Exception as e:
+        print(f"[WARN] DB init failed (will retry on request): {e}")
     try:
         ensure_buckets()
     except Exception as e:

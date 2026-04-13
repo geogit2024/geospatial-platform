@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       service:
-        description: "Service to deploy (api | worker | geoserver | all)"
+        description: "Service to deploy (api | worker | all)"
         required: true
         default: "all"
 
@@ -47,23 +47,8 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Deploy Worker to Railway
-        run: railway up --service worker --detach
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-
-  deploy-geoserver:
-    name: Deploy GeoServer
-    runs-on: ubuntu-latest
-    if: >
-      github.event.inputs.service == 'geoserver' ||
-      github.event.inputs.service == 'all'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-
-      - name: Deploy GeoServer to Railway
-        run: railway up --service geoserver --detach
+        run: |
+          cd worker
+          railway up --service worker --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
