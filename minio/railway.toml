@@ -3,5 +3,6 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+startCommand = "minio server /data --console-address :9001"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
