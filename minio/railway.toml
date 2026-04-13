@@ -3,7 +3,7 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "minio server /data --console-address :9001"
+startCommand = "/bin/sh /start.sh"
 healthcheckPath = "/minio/health/live"
 healthcheckTimeout = 60
 restartPolicyType = "on_failure"

@@ -1,3 +1,5 @@
 FROM minio/minio:latest
-# Use ENTRYPOINT to override — harder to override than CMD
-ENTRYPOINT ["minio", "server", "/data", "--console-address", ":9001"]
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
+EXPOSE 9000 9001
+ENTRYPOINT ["/bin/sh", "/start.sh"]
