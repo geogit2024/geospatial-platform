@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /worker
 
 # Install Python deps (--break-system-packages required on Ubuntu 22.04+)
-RUN pip3 install --no-cache-dir --break-system-packages \
+RUN pip3 install --no-cache-dir \
     "redis==5.0.4" \
     "boto3==1.34.100" \
     "httpx==0.27.0" \
