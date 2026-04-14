@@ -40,6 +40,19 @@ def download_from_bucket(bucket: str, key: str, local_path: str) -> None:
             f.write(chunk)
 
 
+def generate_cog_url(bucket: str, key: str, ttl_seconds: int = 60 * 60 * 24 * 365) -> str:
+    """Generate a long-lived presigned HTTPS URL for GeoServer to read the COG.
+    Uses the same endpoint as the internal client (STORAGE_ENDPOINT).
+    GeoServer must be able to reach this URL from its container.
+    """
+    s3 = get_s3()
+    return s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=ttl_seconds,
+    )
+
+
 def upload_to_bucket(local_path: str, bucket: str, key: str) -> None:
     """Upload using put_object() to avoid s3transfer's ContentLength requirement."""
     s3 = get_s3()

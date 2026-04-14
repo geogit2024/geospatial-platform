@@ -16,7 +16,7 @@ from sqlalchemy import update
 
 from config import get_settings
 from db_client import AsyncSessionLocal
-from storage_client import download_from_bucket, upload_to_bucket
+from storage_client import download_from_bucket, upload_to_bucket, generate_cog_url
 from geoserver_client import GeoServerClient
 from pipeline import reproject, build_overviews, to_cog, get_raster_metadata
 
@@ -90,11 +90,8 @@ async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> 
             log.info(f"[{image_id}] Uploading COG to processed bucket")
             upload_to_bucket(cog_path, settings.storage_bucket_processed, processed_key)
 
-            # 7. Copy COG to GeoServer data dir (shared volume)
-            gs_data_path = os.path.join(settings.geoserver_data_dir, f"{image_id}_cog.tif")
-            os.makedirs(settings.geoserver_data_dir, exist_ok=True)
-            import shutil
-            shutil.copy2(cog_path, gs_data_path)
+            # 7. Generate long-lived presigned URL for GeoServer to read the COG
+            gs_data_path = generate_cog_url(settings.storage_bucket_processed, processed_key)
 
         bbox = metadata.get("bbox") or {}
         await _update_image(
@@ -141,7 +138,7 @@ async def publish_processed_image(
         client = GeoServerClient()
         result = client.publish_cog(
             image_id=image_id,
-            cog_file_path=gs_data_path,
+            cog_url=gs_data_path,   # now an HTTPS presigned URL
             title=filename,
         )
         await _update_image(
