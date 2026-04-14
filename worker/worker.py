@@ -368,14 +368,11 @@ async def sync_geoserver_on_startup() -> None:
                 settings.storage_bucket_processed, processed_key
             )
 
-            # Reconstruct native bbox from DB WGS84 values as best approximation
-            # (the DB stores WGS84 degrees; good enough for sync bbox hint)
+            # DB stores WGS84 degrees (bbox_minx/miny/maxx/maxy).
+            # We must NOT pass these as native_bbox when crs=EPSG:3857 — they
+            # are degree values, not metres.  Pass None so GeoServer auto-detects
+            # the extent from the COG file itself via HTTP Range requests.
             native_bbox = None
-            if bminx is not None:
-                native_bbox = {
-                    "minx": bminx, "miny": bminy,
-                    "maxx": bmaxx, "maxy": bmaxy,
-                }
 
             log.info("[sync] Upserting layer: %s", layer_name)
             try:

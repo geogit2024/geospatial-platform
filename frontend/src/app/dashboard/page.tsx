@@ -248,7 +248,7 @@ export default function DashboardPage() {
                 <p className="text-sm text-gray-400">Carregando serviços…</p>
               ) : ogc ? (
                 <div className="space-y-4">
-                  <OGCService label="WMS" url={ogc.services.wms.getcapabilities} example={ogc.services.wms.getmap_example} />
+                  <OGCService label="WMS" url={ogc.services.wms.getcapabilities} example={ogc.services.wms.getmap_example} serviceUrl={ogc.services.wms.getcapabilities.split("?")[0]} />
                   <OGCService label="WMTS" url={ogc.services.wmts.getcapabilities} />
                   <OGCService label="WCS" url={ogc.services.wcs.getcapabilities} />
 
@@ -297,7 +297,7 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function OGCService({ label, url, example }: { label: string; url: string; example?: string }) {
+function OGCService({ label, url, example, serviceUrl }: { label: string; url: string; example?: string; serviceUrl?: string }) {
   return (
     <div>
       <p className="text-xs font-medium text-gray-600 mb-1">{label}</p>
@@ -320,6 +320,12 @@ function OGCService({ label, url, example }: { label: string; url: string; examp
           <ExternalLink className="w-3 h-3 shrink-0" />
           GetMap exemplo
         </a>
+      )}
+      {serviceUrl && (
+        <div className="mt-1.5">
+          <p className="text-xs text-gray-400 mb-0.5">URL do serviço</p>
+          <CopyField value={serviceUrl} />
+        </div>
       )}
     </div>
   );
