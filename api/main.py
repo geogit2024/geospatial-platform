@@ -49,9 +49,4 @@ app.include_router(services_router, prefix="/api")
 
 @app.get("/health")
 async def health() -> dict:
-    return {
-        "status": "ok",
-        "service": "geospatial-api",
-        "storage_public_url": settings.storage_public_url or "(not set)",
-        "storage_endpoint": settings.storage_endpoint,
-    }
+    return {"status": "ok", "service": "geospatial-api"}
