@@ -1,13 +1,18 @@
 from typing import Optional
+import logging
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from config import get_settings
 from database import get_db
 from models import Image
 
 router = APIRouter(prefix="/images", tags=["images"])
+log = logging.getLogger("api.images")
+settings = get_settings()
 
 
 class ImageResponse(BaseModel):
@@ -72,10 +77,31 @@ async def get_image(image_id: str, db: AsyncSession = Depends(get_db)) -> ImageR
     return ImageResponse.from_orm(image)
 
 
+async def _delete_geoserver_store(store_name: str) -> None:
+    """Remove coverageStore (and its coverages) from GeoServer. Non-fatal on failure."""
+    gs_base = settings.geoserver_url.rstrip("/")
+    ws = settings.geoserver_workspace
+    url = f"{gs_base}/rest/workspaces/{ws}/coveragestores/{store_name}.json?recurse=true"
+    auth = (settings.geoserver_admin_user, settings.geoserver_admin_password)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.delete(url, auth=auth)
+            if r.status_code not in (200, 404):
+                log.warning(f"GeoServer DELETE store {store_name}: HTTP {r.status_code}")
+    except Exception as e:
+        log.warning(f"GeoServer store cleanup failed for {store_name}: {e}")
+
+
 @router.delete("/{image_id}", status_code=204)
 async def delete_image(image_id: str, db: AsyncSession = Depends(get_db)) -> None:
     image = await db.get(Image, image_id)
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
+
+    # Remove GeoServer coverageStore if layer was published
+    if image.layer_name:
+        store_name = f"img_{image_id.replace('-', '_')}"
+        await _delete_geoserver_store(store_name)
+
     await db.delete(image)
     await db.commit()
