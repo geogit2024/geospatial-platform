@@ -205,6 +205,53 @@ async def consume_stream(r: aioredis.Redis, stream: str, consumer_name: str) -> 
             await asyncio.sleep(2)
 
 
+async def sync_geoserver_on_startup() -> None:
+    """Re-publish any 'published' images whose GeoServer layer is missing.
+
+    GeoServer loses all layer config on container restart (no persistent volume).
+    On worker startup we query the DB for published images and ensure each has
+    a live coverageStore in GeoServer.
+    """
+    from sqlalchemy import text
+    from geoserver_client import GeoServerClient
+
+    log.info("Checking GeoServer layer sync...")
+    try:
+        async with AsyncSessionLocal() as session:
+            rows = await session.execute(
+                text("SELECT id, processed_key, layer_name, crs FROM images WHERE status = 'published'")
+            )
+            images = rows.fetchall()
+
+        if not images:
+            log.info("No published images to sync.")
+            return
+
+        gs = GeoServerClient()
+        gs.ensure_workspace()
+
+        for img_id, processed_key, layer_name, crs in images:
+            if not processed_key or not layer_name:
+                continue
+            store_name = f"img_{img_id.replace('-', '_')}"
+            # Check if store exists
+            r = gs._get(f"/workspaces/{gs.ws}/coveragestores/{store_name}.json")
+            if r.status_code == 200:
+                continue  # Already exists
+            # Re-publish
+            cog_url = get_cog_public_url(settings.storage_bucket_processed, processed_key)
+            log.info(f"[sync] Re-publishing lost layer: {layer_name}")
+            try:
+                gs._upsert_store(store_name, cog_url)
+                gs._upsert_coverage(store_name, store_name, layer_name, crs or "EPSG:4326")
+            except Exception as e:
+                log.error(f"[sync] Failed to re-publish {layer_name}: {e}")
+
+        log.info("GeoServer sync complete.")
+    except Exception as e:
+        log.error(f"GeoServer sync failed: {e}", exc_info=True)
+
+
 async def main() -> None:
     log.info("GDAL Worker starting...")
     r = aioredis.from_url(settings.redis_url, decode_responses=True)
@@ -213,6 +260,8 @@ async def main() -> None:
     consumer_name = f"worker-{os.getpid()}"
     log.info(f"Consumer name: {consumer_name}")
     log.info("Listening on streams: image:uploaded, image:processed")
+
+    await sync_geoserver_on_startup()
 
     await asyncio.gather(
         consume_stream(r, settings.redis_stream_uploaded, consumer_name),
