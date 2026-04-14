@@ -1,10 +1,11 @@
-# Railway API Dockerfile — build context is project root
+# Cloud Run API Dockerfile — build context is project root
 # ── Stage 1: build dependencies ───────────────────────────────────────────────
 FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ libssl-dev libffi-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY api/requirements.txt .
@@ -25,6 +26,7 @@ RUN chmod +x start.sh
 
 USER appuser
 
-EXPOSE 8000
+# Cloud Run injeta PORT automaticamente (padrão 8080)
+EXPOSE 8080
 
 CMD ["/bin/sh", "start.sh"]
