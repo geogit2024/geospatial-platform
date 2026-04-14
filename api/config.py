@@ -3,16 +3,9 @@ from functools import lru_cache
 
 
 class Settings(BaseSettings):
-    # Storage
-    storage_backend: str = "minio"
-    storage_endpoint: str = "http://minio:9000"
-    # Public HTTPS URL for presigned URLs (browser must reach this).
-    # If empty, falls back to storage_endpoint (dev only).
-    storage_public_url: str = ""
-    storage_access_key: str = "minioadmin"
-    storage_secret_key: str = "minioadmin"
-    storage_bucket_raw: str = "raw-images"
-    storage_bucket_processed: str = "processed-images"
+    # Storage — GCS (credentials via ADC, no keys needed)
+    storage_bucket_raw: str = "raw-images-geopublish"
+    storage_bucket_processed: str = "imagens-processadas-geopublicas"
 
     # Redis
     redis_url: str = "redis://redis:6379/0"
