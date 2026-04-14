@@ -6,6 +6,7 @@ class WorkerSettings(BaseSettings):
     # Storage
     storage_backend: str = "minio"
     storage_endpoint: str = "http://minio:9000"
+    storage_public_url: str = ""          # Public HTTPS URL for GeoServer to reach processed COGs
     storage_access_key: str = "minioadmin"
     storage_secret_key: str = "minioadmin"
     storage_bucket_raw: str = "raw-images"

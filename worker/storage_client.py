@@ -40,17 +40,15 @@ def download_from_bucket(bucket: str, key: str, local_path: str) -> None:
             f.write(chunk)
 
 
-def generate_cog_url(bucket: str, key: str, ttl_seconds: int = 60 * 60 * 24 * 365) -> str:
-    """Generate a long-lived presigned HTTPS URL for GeoServer to read the COG.
-    Uses the same endpoint as the internal client (STORAGE_ENDPOINT).
-    GeoServer must be able to reach this URL from its container.
+def get_cog_public_url(bucket: str, key: str) -> str:
+    """Return a plain public HTTPS URL for GeoServer to read the COG.
+
+    Requires the processed bucket to have a public-read policy (set by ensure_buckets).
+    Using presigned URLs is NOT possible because MinIO caps TTL at 7 days, making
+    the URL expire before GeoServer has a chance to serve all future tile requests.
     """
-    s3 = get_s3()
-    return s3.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": bucket, "Key": key},
-        ExpiresIn=ttl_seconds,
-    )
+    public_base = (settings.storage_public_url or settings.storage_endpoint).rstrip("/")
+    return f"{public_base}/{bucket}/{key}"
 
 
 def upload_to_bucket(local_path: str, bucket: str, key: str) -> None:

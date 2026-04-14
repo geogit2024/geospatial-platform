@@ -44,6 +44,17 @@ def get_s3_public():
     return _s3_public
 
 
+_PUBLIC_READ_POLICY = """{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"AWS": ["*"]},
+    "Action": ["s3:GetObject"],
+    "Resource": ["arn:aws:s3:::{bucket}/*"]
+  }]
+}"""
+
+
 def ensure_buckets() -> None:
     s3 = get_s3()
     for bucket in [settings.storage_bucket_raw, settings.storage_bucket_processed]:
@@ -51,6 +62,16 @@ def ensure_buckets() -> None:
             s3.head_bucket(Bucket=bucket)
         except ClientError:
             s3.create_bucket(Bucket=bucket)
+
+    # Make processed bucket publicly readable so GeoServer can fetch COGs via plain URL
+    # (presigned URLs cannot exceed MinIO's 7-day TTL limit)
+    try:
+        s3.put_bucket_policy(
+            Bucket=settings.storage_bucket_processed,
+            Policy=_PUBLIC_READ_POLICY.format(bucket=settings.storage_bucket_processed),
+        )
+    except ClientError as e:
+        print(f"[WARN] Could not set public policy on {settings.storage_bucket_processed}: {e}")
 
 
 def generate_upload_url(key: str, content_type: str = "image/tiff") -> str:
