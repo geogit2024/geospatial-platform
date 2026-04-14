@@ -6,6 +6,9 @@ class Settings(BaseSettings):
     # Storage
     storage_backend: str = "minio"
     storage_endpoint: str = "http://minio:9000"
+    # Public HTTPS URL for presigned URLs (browser must reach this).
+    # If empty, falls back to storage_endpoint (dev only).
+    storage_public_url: str = ""
     storage_access_key: str = "minioadmin"
     storage_secret_key: str = "minioadmin"
     storage_bucket_raw: str = "raw-images"
