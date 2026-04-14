@@ -63,11 +63,18 @@ def _gdalinfo(path: str) -> dict:
 
 
 def _extract_epsg(info: dict) -> Optional[str]:
+    """
+    Extract the top-level EPSG code from a gdalinfo coordinateSystem WKT.
+
+    A PROJCRS WKT contains multiple ID["EPSG",...] entries (base geographic CRS
+    and the projected CRS itself).  We need the LAST one, which corresponds to
+    the outermost (overall) CRS — e.g. EPSG:3857, not the embedded EPSG:4326.
+    """
     wkt = info.get("coordinateSystem", {}).get("wkt", "")
     if not wkt:
         return None
-    m = re.search(r'ID\["EPSG",(\d+)\]', wkt)
-    return f"EPSG:{m.group(1)}" if m else None
+    matches = re.findall(r'ID\["EPSG",(\d+)\]', wkt)
+    return f"EPSG:{matches[-1]}" if matches else None
 
 
 def _extract_native_bbox(info: dict) -> Optional[dict]:
