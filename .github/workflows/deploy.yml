@@ -10,9 +10,6 @@ on:
         required: true
         default: "all"
 
-env:
-  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-
 jobs:
   deploy-api:
     name: Deploy API

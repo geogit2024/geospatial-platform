@@ -26,6 +26,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+# Force UTF-8 stdout on Windows (avoids cp1252 UnicodeEncodeError with ANSI chars)
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
 # ─────────────────────────────────────────────
 #  ANSI colors (works on Windows 10+ terminals)
