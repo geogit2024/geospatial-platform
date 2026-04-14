@@ -17,7 +17,6 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV HOSTNAME=0.0.0.0
 
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 
@@ -28,6 +27,5 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 USER nextjs
 EXPOSE 3000
 
-# Railway injects PORT; Next standalone server reads it via -p flag
-# Next.js standalone server.js reads PORT env var automatically
-CMD ["node", "server.js"]
+# Railway injects PORT; force 0.0.0.0 so the container is reachable externally
+CMD ["sh", "-c", "HOSTNAME=0.0.0.0 node server.js"]
