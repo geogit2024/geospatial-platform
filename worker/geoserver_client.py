@@ -9,10 +9,10 @@ REST API flow:
 """
 
 import logging
+import math
 from typing import Optional
 
 import httpx
-from osgeo import osr
 
 from config import get_settings
 
@@ -22,26 +22,48 @@ log = logging.getLogger("worker.geoserver")
 # SRS exposed in WMS/WMTS GetCapabilities — covers ArcGIS Online, Leaflet, QGIS
 _SUPPORTED_SRS = ["EPSG:4326", "EPSG:3857"]
 
+# EPSG:3857 extent in metres
+_M = 20037508.342789244
+
 
 def _transform_bbox_to_wgs84(bbox: dict, src_crs: str) -> dict:
-    """Transform bbox corners from src_crs to WGS84 (lon/lat)."""
-    src = osr.SpatialReference()
-    src.SetFromUserInput(src_crs)
-    src.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    """
+    Transform bbox from src_crs to WGS84 (lon/lat).
+    Uses osgeo.osr when available; falls back to math for EPSG:3857.
+    """
+    # Fast math path for the common case (EPSG:3857 → WGS84)
+    if "3857" in src_crs or "900913" in src_crs:
+        def _x2lon(x): return x * 180.0 / _M
+        def _y2lat(y):
+            return math.degrees(2.0 * math.atan(math.exp(y * math.pi / _M)) - math.pi / 2.0)
+        return {
+            "minx": _x2lon(bbox["minx"]),
+            "miny": _y2lat(bbox["miny"]),
+            "maxx": _x2lon(bbox["maxx"]),
+            "maxy": _y2lat(bbox["maxy"]),
+        }
 
-    dst = osr.SpatialReference()
-    dst.ImportFromEPSG(4326)
-    dst.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-
-    ct = osr.CoordinateTransformation(src, dst)
-    lon1, lat1, _ = ct.TransformPoint(bbox["minx"], bbox["miny"])
-    lon2, lat2, _ = ct.TransformPoint(bbox["maxx"], bbox["maxy"])
-    return {
-        "minx": min(lon1, lon2),
-        "miny": min(lat1, lat2),
-        "maxx": max(lon1, lon2),
-        "maxy": max(lat1, lat2),
-    }
+    # General path via OSR
+    try:
+        from osgeo import osr
+        src = osr.SpatialReference()
+        src.SetFromUserInput(src_crs)
+        src.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        dst = osr.SpatialReference()
+        dst.ImportFromEPSG(4326)
+        dst.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        ct = osr.CoordinateTransformation(src, dst)
+        lon1, lat1, _ = ct.TransformPoint(bbox["minx"], bbox["miny"])
+        lon2, lat2, _ = ct.TransformPoint(bbox["maxx"], bbox["maxy"])
+        return {
+            "minx": min(lon1, lon2),
+            "miny": min(lat1, lat2),
+            "maxx": max(lon1, lon2),
+            "maxy": max(lat1, lat2),
+        }
+    except Exception as exc:
+        log.warning("OSR bbox transform failed (%s), returning native bbox", exc)
+        return bbox
 
 
 class GeoServerClient:
