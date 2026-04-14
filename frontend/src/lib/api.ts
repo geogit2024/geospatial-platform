@@ -1,4 +1,6 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Empty BASE = relative URL. Next.js rewrites /api/* → backend at runtime (server-side).
+// This avoids NEXT_PUBLIC_ build-time baking of the API URL.
+const BASE = "";
 
 export type ImageStatus =
   | "pending" | "uploading" | "uploaded" | "processing"
@@ -90,6 +92,6 @@ export async function confirmUpload(imageId: string): Promise<void> {
 }
 
 export async function deleteImage(id: string): Promise<void> {
-  const r = await fetch(`${BASE}/api/images/${id}`, { method: "DELETE" });
+  const r = await fetch(`/api/images/${id}`, { method: "DELETE" });
   if (!r.ok && r.status !== 204) throw new Error(`${r.status}`);
 }
