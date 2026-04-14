@@ -19,7 +19,8 @@ class WorkerSettings(BaseSettings):
     redis_consumer_group: str = "workers"
 
     # GeoServer
-    geoserver_url: str = "http://geoserver:8080/geoserver"
+    geoserver_url: str = "http://geoserver:8080/geoserver"           # internal — REST API calls
+    geoserver_public_url: str = ""                                    # public HTTPS — OGC URLs for clients
     geoserver_admin_user: str = "admin"
     geoserver_admin_password: str = "geoserver"
     geoserver_workspace: str = "geoimages"
@@ -30,7 +31,7 @@ class WorkerSettings(BaseSettings):
 
     # Worker
     worker_concurrency: int = 4
-    target_crs: str = "EPSG:4326"
+    target_crs: str = "EPSG:3857"  # Web Mercator — required by ArcGIS Online / Leaflet
 
     class Config:
         env_file = ".env"

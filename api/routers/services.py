@@ -7,6 +7,13 @@ from models import Image, ProcessingStatus
 router = APIRouter(prefix="/services", tags=["ogc-services"])
 
 
+def _https(url: str) -> str:
+    """Ensure URL uses HTTPS — ArcGIS Online and most GIS clients require it."""
+    if url and url.startswith("http://"):
+        return "https://" + url[7:]
+    return url
+
+
 @router.get("/{image_id}/ogc")
 async def get_ogc_services(image_id: str, db: AsyncSession = Depends(get_db)) -> dict:
     image = await db.get(Image, image_id)
@@ -19,26 +26,30 @@ async def get_ogc_services(image_id: str, db: AsyncSession = Depends(get_db)) ->
             detail=f"Image not yet published. Current status: {image.status}",
         )
 
+    wms  = _https(image.wms_url)
+    wmts = _https(image.wmts_url)
+    wcs  = _https(image.wcs_url)
+
     return {
         "image_id": image.id,
         "layer": image.layer_name,
         "services": {
             "wms": {
-                "url": image.wms_url,
-                "getcapabilities": f"{image.wms_url}?service=WMS&version=1.3.0&request=GetCapabilities",
+                "url": wms,
+                "getcapabilities": f"{wms}?service=WMS&version=1.3.0&request=GetCapabilities",
                 "getmap_example": (
-                    f"{image.wms_url}?service=WMS&version=1.3.0&request=GetMap"
+                    f"{wms}?service=WMS&version=1.3.0&request=GetMap"
                     f"&layers={image.layer_name}&bbox=-180,-90,180,90"
                     f"&width=800&height=400&crs=EPSG:4326&format=image/png"
                 ),
             },
             "wmts": {
-                "url": image.wmts_url,
-                "getcapabilities": f"{image.wmts_url}?REQUEST=GetCapabilities",
+                "url": wmts,
+                "getcapabilities": f"{wmts}?REQUEST=GetCapabilities",
             },
             "wcs": {
-                "url": image.wcs_url,
-                "getcapabilities": f"{image.wcs_url}?service=WCS&version=2.0.1&request=GetCapabilities",
+                "url": wcs,
+                "getcapabilities": f"{wcs}?service=WCS&version=2.0.1&request=GetCapabilities",
             },
         },
         "bbox": {

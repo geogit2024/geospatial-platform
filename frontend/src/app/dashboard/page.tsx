@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { RefreshCw, Trash2, Map, ExternalLink, AlertCircle, Upload } from "lucide-react";
+import { RefreshCw, Trash2, Map, ExternalLink, AlertCircle, Upload, Copy, Check } from "lucide-react";
 import { getImages, deleteImage, getOGCServices, type ImageRecord, type OGCServices } from "@/lib/api";
 import { cn, STATUS_IS_ACTIVE, formatDate } from "@/lib/utils";
 import StatusBadge from "@/components/StatusBadge";
@@ -231,6 +231,12 @@ export default function DashboardPage() {
                 <span className="font-mono text-xs">{selected.layer_name}</span>
               </MetaRow>
             )}
+
+            {selected.wms_url && (
+              <MetaRow label="URL WMS (HTTPS)">
+                <CopyField value={selected.wms_url} />
+              </MetaRow>
+            )}
           </div>
 
           {/* OGC Services */}
@@ -261,6 +267,23 @@ export default function DashboardPage() {
           )}
         </aside>
       )}
+    </div>
+  );
+}
+
+function CopyField({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="flex items-start gap-1">
+      <code className="text-xs bg-gray-100 px-1 py-0.5 rounded break-all flex-1">{value}</code>
+      <button onClick={copy} className="shrink-0 p-0.5 text-gray-400 hover:text-brand-500" title="Copiar">
+        {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+      </button>
     </div>
   );
 }
