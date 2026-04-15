@@ -13,6 +13,7 @@ const ACCEPT_MIME = "image/tiff,.tif,.tiff,.geotiff,.jp2,.ecw,.img";
 export default function UploadPage() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+  const uploadingRef = useRef(false);           // sync guard against double-submit
   const [file, setFile] = useState<File | null>(null);
   const [step, setStep] = useState<Step>("idle");
   const [progress, setProgress] = useState(0);
@@ -40,7 +41,8 @@ export default function UploadPage() {
   }, []);
 
   const startUpload = async () => {
-    if (!file) return;
+    if (!file || uploadingRef.current) return;
+    uploadingRef.current = true;
     setError(null);
     try {
       setStep("signing");
@@ -57,6 +59,8 @@ export default function UploadPage() {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Erro desconhecido");
       setStep("error");
+    } finally {
+      uploadingRef.current = false;
     }
   };
 
@@ -92,6 +96,7 @@ export default function UploadPage() {
           type="file"
           accept={ACCEPT_MIME}
           className="hidden"
+          onClick={(e) => e.stopPropagation()}
           onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
         />
         {file ? (
