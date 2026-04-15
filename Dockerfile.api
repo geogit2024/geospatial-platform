@@ -26,7 +26,7 @@ RUN chmod +x start.sh
 
 USER appuser
 
-# Cloud Run injeta PORT automaticamente (padrão 8080)
 EXPOSE 8080
 
-CMD ["/bin/sh", "start.sh"]
+# Cloud Run injects PORT=8080; use shell form so the variable is expanded
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
