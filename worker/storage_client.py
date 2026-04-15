@@ -11,10 +11,13 @@ iam.googleapis.com (signBlob), which is not affected by the SSL issue.
 
 import datetime
 import json
+import logging
 import os
 import subprocess
 import time
 from urllib.parse import quote
+
+log = logging.getLogger("worker.storage")
 
 from google.cloud import storage
 from google.auth import default
@@ -62,6 +65,23 @@ def get_gcs() -> storage.Client:
 
 # ── Download ─────────────────────────────────────────────────────────────────
 
+def _run_curl(args: list[str], description: str) -> None:
+    """Run a curl command with retries. Raises RuntimeError on failure (no token leak)."""
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        result = subprocess.run(args, capture_output=True, text=True)
+        if result.returncode == 0:
+            return
+        log.warning(
+            "%s failed (attempt %d/%d) — curl exit %d  stderr: %s",
+            description, attempt, max_retries,
+            result.returncode, result.stderr.strip()[:200],
+        )
+        if attempt < max_retries:
+            time.sleep(2 * attempt)
+    raise RuntimeError(f"{description} failed after {max_retries} attempts (curl exit {result.returncode})")
+
+
 def download_from_bucket(bucket: str, key: str, local_path: str) -> None:
     """Download a GCS object to a local file using curl."""
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -71,14 +91,11 @@ def download_from_bucket(bucket: str, key: str, local_path: str) -> None:
         f"https://storage.googleapis.com/download/storage/v1"
         f"/b/{bucket}/o/{encoded_key}?alt=media"
     )
-    subprocess.run(
-        [
-            "curl", "-sfL",
-            "-H", f"Authorization: Bearer {token}",
-            "-o", local_path,
-            url,
-        ],
-        check=True,
+    _run_curl(
+        ["curl", "-fL", "--retry", "3", "--retry-connrefused",
+         "-H", f"Authorization: Bearer {token}",
+         "-o", local_path, url],
+        f"GCS download gs://{bucket}/{key}",
     )
 
 
@@ -92,15 +109,13 @@ def upload_to_bucket(local_path: str, bucket: str, key: str) -> None:
         f"https://storage.googleapis.com/upload/storage/v1"
         f"/b/{bucket}/o?uploadType=media&name={encoded_key}"
     )
-    subprocess.run(
-        [
-            "curl", "-sfL", "-X", "POST",
-            "-H", f"Authorization: Bearer {token}",
-            "-H", "Content-Type: image/tiff",
-            "--data-binary", f"@{local_path}",
-            url,
-        ],
-        check=True,
+    _run_curl(
+        ["curl", "-fL", "--retry", "3", "--retry-connrefused",
+         "-X", "POST",
+         "-H", f"Authorization: Bearer {token}",
+         "-H", "Content-Type: image/tiff",
+         "--data-binary", f"@{local_path}", url],
+        f"GCS upload gs://{bucket}/{key}",
     )
 
 
