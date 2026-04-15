@@ -12,14 +12,18 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        await init_db()
-    except Exception as e:
-        print(f"[WARN] DB init failed (will retry on request): {e}")
-    try:
-        ensure_buckets()
-    except Exception as e:
-        print(f"[WARN] Could not ensure storage buckets: {e}")
+    # Run DB init in background so it never blocks uvicorn from binding to PORT.
+    # Tables are created via migrations or Cloud SQL Studio on first deploy.
+    import asyncio
+    async def _init_db_background():
+        try:
+            await asyncio.wait_for(init_db(), timeout=10.0)
+            print("[INFO] DB init completed")
+        except asyncio.TimeoutError:
+            print("[WARN] DB init timed out — server starting anyway")
+        except Exception as e:
+            print(f"[WARN] DB init failed — server starting anyway: {e}")
+    asyncio.create_task(_init_db_background())
     yield
 
 
