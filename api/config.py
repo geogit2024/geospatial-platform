@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # API
     api_secret_key: str = "changeme"
     signed_url_expiry_seconds: int = 3600
-    cors_origins: str = "http://localhost:3000,http://localhost:8080,https://geopublish-frontend-owbbo3ghkq-uc.a.run.app"
+    cors_origins: str = "http://localhost:3000,http://localhost:8080,https://geopublish-frontend-owbbo3ghkq-uc.a.run.app,https://geopublish-frontend-758336857324.us-central1.run.app"
 
 
 @lru_cache

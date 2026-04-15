@@ -5,11 +5,11 @@ Download and upload use curl instead of the Python GCS SDK to avoid
 SSLEOFError (OpenSSL 3.0 + Ubuntu 22.04 inside VPC).  curl uses libcurl
 which handles GCP's network paths correctly.
 
-Signed URLs (get_cog_public_url) still use the SDK because they call
-iam.googleapis.com (signBlob), which is not affected by the SSL issue.
+get_cog_public_url() returns a permanent public URL — the processed bucket
+is configured with allUsers:objectViewer so GeoServer can read COGs via
+HTTP Range requests without expiring signed URLs.
 """
 
-import datetime
 import json
 import logging
 import os
@@ -19,15 +19,10 @@ from urllib.parse import quote
 
 log = logging.getLogger("worker.storage")
 
-from google.cloud import storage
-from google.auth import default
-from google.auth.transport import requests as google_requests
-
 from config import get_settings
 
 settings = get_settings()
 
-_gcs_client = None
 _token_cache: dict = {"token": None, "expires": 0.0}
 
 METADATA_TOKEN_URL = (
@@ -54,16 +49,7 @@ def _get_access_token() -> str:
     return _token_cache["token"]
 
 
-# ── GCS client (for signed URLs only) ────────────────────────────────────────
-
-def get_gcs() -> storage.Client:
-    global _gcs_client
-    if _gcs_client is None:
-        _gcs_client = storage.Client()
-    return _gcs_client
-
-
-# ── Download ─────────────────────────────────────────────────────────────────
+# ── curl helper (with retries) ────────────────────────────────────────────────
 
 def _run_curl(args: list[str], description: str) -> None:
     """Run a curl command with retries. Raises RuntimeError on failure (no token leak)."""
@@ -79,8 +65,12 @@ def _run_curl(args: list[str], description: str) -> None:
         )
         if attempt < max_retries:
             time.sleep(2 * attempt)
-    raise RuntimeError(f"{description} failed after {max_retries} attempts (curl exit {result.returncode})")
+    raise RuntimeError(
+        f"{description} failed after {max_retries} attempts (curl exit {result.returncode})"
+    )
 
+
+# ── Download ─────────────────────────────────────────────────────────────────
 
 def download_from_bucket(bucket: str, key: str, local_path: str) -> None:
     """Download a GCS object to a local file using curl."""
@@ -97,6 +87,10 @@ def download_from_bucket(bucket: str, key: str, local_path: str) -> None:
          "-o", local_path, url],
         f"GCS download gs://{bucket}/{key}",
     )
+    size = os.path.getsize(local_path)
+    if size == 0:
+        raise RuntimeError(f"GCS download produced empty file: gs://{bucket}/{key}")
+    log.info("Downloaded gs://%s/%s → %s (%d bytes)", bucket, key, local_path, size)
 
 
 # ── Upload ───────────────────────────────────────────────────────────────────
@@ -119,23 +113,14 @@ def upload_to_bucket(local_path: str, bucket: str, key: str) -> None:
     )
 
 
-# ── Signed URL (for GeoServer to read COG) ───────────────────────────────────
+# ── Public URL (permanent, no expiry) ────────────────────────────────────────
 
 def get_cog_public_url(bucket: str, key: str) -> str:
     """
-    Return a v4 signed GET URL (7-day TTL) for GeoServer to read the COG.
+    Return the permanent public HTTPS URL for a COG in the processed bucket.
 
-    Uses ADC identity to sign via iam.googleapis.com — not affected by the
-    storage.googleapis.com SSL issue.
+    The processed bucket has allUsers:objectViewer — GeoServer reads COGs via
+    HTTP Range requests using this URL.  No expiry, no signed-URL renewal needed.
     """
-    credentials, _ = default()
-    credentials.refresh(google_requests.Request())
-
-    blob = get_gcs().bucket(bucket).blob(key)
-    return blob.generate_signed_url(
-        version="v4",
-        expiration=datetime.timedelta(days=7),
-        method="GET",
-        service_account_email=credentials.service_account_email,
-        access_token=credentials.token,
-    )
+    encoded_key = quote(key, safe="/")
+    return f"https://storage.googleapis.com/{bucket}/{encoded_key}"

@@ -12,6 +12,18 @@ router = APIRouter(prefix="/upload", tags=["upload"])
 
 ALLOWED_EXTENSIONS = {".tif", ".tiff", ".geotiff", ".jp2", ".ecw", ".img"}
 
+# Normalize browser-supplied content-type to a predictable value per extension.
+# GCS signed PUT URLs are scoped to the content-type used during signing — mismatches
+# cause 403 errors.  Browsers sometimes send "application/octet-stream" for .tif files.
+_CONTENT_TYPE_MAP = {
+    ".tif":     "image/tiff",
+    ".tiff":    "image/tiff",
+    ".geotiff": "image/tiff",
+    ".jp2":     "image/jp2",
+    ".ecw":     "image/x-ecw",
+    ".img":     "application/octet-stream",
+}
+
 
 class UploadRequest(BaseModel):
     filename: str
@@ -41,6 +53,9 @@ async def get_signed_upload_url(
             detail=f"File type '{ext}' not supported. Allowed: {ALLOWED_EXTENSIONS}",
         )
 
+    # Normalize content-type — browser may send "application/octet-stream" for .tif
+    content_type = _CONTENT_TYPE_MAP.get(ext, request.content_type or "image/tiff")
+
     image_id = str(uuid.uuid4())
     raw_key = f"{image_id}/original{ext}"
 
@@ -53,7 +68,7 @@ async def get_signed_upload_url(
     db.add(image)
     await db.commit()
 
-    upload_url = generate_upload_url(raw_key, request.content_type)
+    upload_url = generate_upload_url(raw_key, content_type)
 
     return UploadResponse(
         image_id=image_id,

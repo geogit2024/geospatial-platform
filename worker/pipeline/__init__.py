@@ -94,8 +94,11 @@ def _extract_nodata(info: dict) -> Optional[float]:
     return float(nd) if nd is not None else None
 
 
-def _run(cmd: list, label: str) -> None:
-    r = subprocess.run(cmd, capture_output=True, text=True)
+def _run(cmd: list, label: str, timeout: int = 600) -> None:
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{label} timed out after {timeout}s")
     if r.returncode != 0:
         raise RuntimeError(f"{label} failed (exit {r.returncode}): {r.stderr.strip()[:400]}")
     if r.stderr:

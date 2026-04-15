@@ -218,13 +218,19 @@ async def publish_processed_image(
     await _update_image(image_id, status="publishing")
 
     try:
+        # GeoServerClient uses synchronous httpx — run in thread executor to avoid
+        # blocking the asyncio event loop during REST calls (up to 60s each).
+        loop = asyncio.get_event_loop()
         client = GeoServerClient()
-        result = client.publish_cog(
-            image_id=image_id,
-            cog_url=gs_data_path,
-            title=filename,
-            crs=native_crs,
-            native_bbox=native_bbox,
+        result = await loop.run_in_executor(
+            None,
+            lambda: client.publish_cog(
+                image_id=image_id,
+                cog_url=gs_data_path,
+                title=filename,
+                crs=native_crs,
+                native_bbox=native_bbox,
+            ),
         )
 
         await _update_image(
@@ -237,22 +243,34 @@ async def publish_processed_image(
         )
         log.info("[%s] Published. Layer: %s", image_id, result["layer_name"])
 
-        # WMS validation — brief pause to let GeoServer finish indexing the COG
-        await asyncio.sleep(3)
+        # WMS validation — give GeoServer time to complete COG indexing.
+        # Retry up to 3 times (5s apart) to avoid false failures on large files.
+        await asyncio.sleep(5)
         if native_bbox:
-            ok = await validate_wms_layer(
-                image_id, result["layer_name"], native_bbox, native_crs
-            )
-            if not ok:
-                log.error(
-                    "[%s] WMS validation failed after publication — rolling back", image_id
+            validated = False
+            for attempt in range(1, 4):
+                ok = await validate_wms_layer(
+                    image_id, result["layer_name"], native_bbox, native_crs
                 )
-                # Rollback: remove GeoServer store and mark as error
+                if ok:
+                    validated = True
+                    break
+                if attempt < 3:
+                    log.warning("[%s] WMS attempt %d/3 failed — retrying in 5s", image_id, attempt)
+                    await asyncio.sleep(5)
+
+            if not validated:
+                log.error(
+                    "[%s] WMS validation failed after 3 attempts — rolling back", image_id
+                )
                 store_name = f"img_{image_id.replace('-', '_')}"
                 try:
-                    client._delete(
-                        f"/workspaces/{client.ws}/coveragestores/{store_name}.json",
-                        params={"recurse": "true"},
+                    await loop.run_in_executor(
+                        None,
+                        lambda: client._delete(
+                            f"/workspaces/{client.ws}/coveragestores/{store_name}.json",
+                            params={"recurse": "true"},
+                        ),
                     )
                 except Exception as del_exc:
                     log.warning("[%s] Rollback GeoServer delete failed: %s", image_id, del_exc)
