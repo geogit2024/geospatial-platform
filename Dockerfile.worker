@@ -1,4 +1,4 @@
-# Railway Worker Dockerfile — build context is project root
+# Worker Dockerfile — build context is project root
 FROM ghcr.io/osgeo/gdal:ubuntu-small-3.8.4
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -14,7 +14,8 @@ WORKDIR /worker
 
 RUN pip3 install --no-cache-dir --break-system-packages \
     "redis==5.0.4" \
-    "boto3==1.34.100" \
+    "google-cloud-storage==2.16.0" \
+    "google-auth==2.29.0" \
     "httpx==0.27.0" \
     "sqlalchemy[asyncio]==2.0.30" \
     "asyncpg==0.29.0" \
