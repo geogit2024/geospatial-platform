@@ -10,6 +10,8 @@ import json
 import logging
 import os
 import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Optional
 
@@ -391,9 +393,27 @@ async def sync_geoserver_on_startup() -> None:
         log.error("GeoServer startup sync failed: %s", exc, exc_info=True)
 
 
+# ─── Health server (Cloud Run requires HTTP on PORT) ────────────────────────────
+
+def _start_health_server() -> None:
+    port = int(os.environ.get("PORT", 8080))
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *args):  # suppress per-request access logs
+            pass
+
+    HTTPServer(("0.0.0.0", port), _Handler).serve_forever()
+
+
 # ─── Main ───────────────────────────────────────────────────────────────────────
 
 async def main() -> None:
+    threading.Thread(target=_start_health_server, daemon=True).start()
     log.info("GDAL Worker starting...")
     r = aioredis.from_url(settings.redis_url, decode_responses=True)
     await ensure_consumer_groups(r)

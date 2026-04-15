@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /worker
 
-RUN pip3 install --no-cache-dir --break-system-packages \
+RUN pip3 install --no-cache-dir \
     "redis==5.0.4" \
     "google-cloud-storage==2.16.0" \
     "google-auth==2.29.0" \
