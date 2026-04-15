@@ -1,8 +1,10 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     # Storage — GCS (credentials via ADC, no keys needed)
     storage_bucket_raw: str = "raw-images-geopublish"
     storage_bucket_processed: str = "imagens-processadas-geopublicas"
@@ -27,9 +29,6 @@ class Settings(BaseSettings):
     api_secret_key: str = "changeme"
     signed_url_expiry_seconds: int = 3600
     cors_origins: str = "http://localhost:3000,http://localhost:8080"
-
-    class Config:
-        env_file = ".env"
 
 
 @lru_cache

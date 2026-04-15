@@ -1,4 +1,4 @@
-# ── Stage 1: build dependencies ──────────────────────────────────────────────
+# Stage 1: build dependencies
 FROM python:3.11-slim AS builder
 
 WORKDIR /build
@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+# Stage 2: runtime
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -23,9 +23,9 @@ COPY --chown=appuser:appuser . .
 
 USER appuser
 
-EXPOSE 8000
+EXPOSE 8080
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PORT:-8080}/health" || exit 1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]

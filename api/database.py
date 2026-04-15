@@ -1,14 +1,16 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.pool import NullPool
 from config import get_settings
 from models import Base
 
 settings = get_settings()
 
+# NullPool: Cloud Run scales to zero — persistent connection pools are useless and
+# cause stale-connection errors on cold starts. Each request gets a fresh connection.
 engine = create_async_engine(
     settings.database_url,
     echo=False,
-    pool_pre_ping=True,
-    connect_args={"timeout": 5},  # fail fast if DB unreachable (Cloud Run startup)
+    poolclass=NullPool,
 )
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 

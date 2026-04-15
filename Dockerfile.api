@@ -1,5 +1,5 @@
-# Cloud Run API Dockerfile — build context is project root
-# ── Stage 1: build dependencies ───────────────────────────────────────────────
+# Cloud Run API Dockerfile - build context is project root
+# Stage 1: build dependencies
 FROM python:3.11-slim AS builder
 
 WORKDIR /build
@@ -11,10 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY api/requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+# Stage 2: runtime
 FROM python:3.11-slim
 
 WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/* && \
@@ -28,5 +31,8 @@ USER appuser
 
 EXPOSE 8080
 
-# Cloud Run injects PORT=8080; use shell form so the variable is expanded
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PORT:-8080}/health" || exit 1
+
+# Cloud Run injects PORT=8080; bind to it explicitly
 CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]

@@ -1,0 +1,17 @@
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.env
+.env.*
+*.env
+.git
+.github
+.gitignore
+frontend/
+worker/
+minio/
+*.md
+docker-compose*.yml
+Dockerfile*
+!Dockerfile.api
