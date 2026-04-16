@@ -1,7 +1,7 @@
 from typing import Optional
 import logging
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -14,6 +14,27 @@ from services.queue import publish_upload_event
 router = APIRouter(prefix="/images", tags=["images"])
 log = logging.getLogger("api.images")
 settings = get_settings()
+
+
+def _header_first_value(request: Request, header_name: str) -> Optional[str]:
+    value = request.headers.get(header_name)
+    if not value:
+        return None
+    return value.split(",")[0].strip()
+
+
+def _public_api_base(request: Request) -> str:
+    forwarded_proto = _header_first_value(request, "x-forwarded-proto")
+    forwarded_host = _header_first_value(request, "x-forwarded-host")
+    host = forwarded_host or request.headers.get("host") or request.url.netloc
+    scheme = forwarded_proto or request.url.scheme or "http"
+
+    if host.endswith(".run.app"):
+        scheme = "https"
+    elif scheme not in ("http", "https"):
+        scheme = "https" if "https" in scheme else "http"
+
+    return f"{scheme}://{host}".rstrip("/")
 
 
 class ImageResponse(BaseModel):
@@ -31,7 +52,7 @@ class ImageResponse(BaseModel):
     updated_at: str
 
     @classmethod
-    def from_orm(cls, img: Image) -> "ImageResponse":
+    def from_orm(cls, img: Image, public_api_base: Optional[str] = None) -> "ImageResponse":
         bbox = None
         if img.bbox_minx is not None:
             bbox = {
@@ -40,6 +61,13 @@ class ImageResponse(BaseModel):
                 "maxx": img.bbox_maxx,
                 "maxy": img.bbox_maxy,
             }
+        wms_url = img.wms_url
+        wmts_url = img.wmts_url
+        wcs_url = img.wcs_url
+        if public_api_base and img.layer_name:
+            wms_url = f"{public_api_base}/api/services/{img.id}/wms-proxy"
+            wmts_url = f"{public_api_base}/api/services/{img.id}/wmts-proxy"
+            wcs_url = f"{public_api_base}/api/services/{img.id}/wcs-proxy"
         return cls(
             id=img.id,
             filename=img.filename,
@@ -47,9 +75,9 @@ class ImageResponse(BaseModel):
             crs=img.crs,
             bbox=bbox,
             layer_name=img.layer_name,
-            wms_url=img.wms_url,
-            wmts_url=img.wmts_url,
-            wcs_url=img.wcs_url,
+            wms_url=wms_url,
+            wmts_url=wmts_url,
+            wcs_url=wcs_url,
             error_message=img.error_message,
             created_at=img.created_at.isoformat(),
             updated_at=img.updated_at.isoformat(),
@@ -58,6 +86,7 @@ class ImageResponse(BaseModel):
 
 @router.get("/", response_model=list[ImageResponse])
 async def list_images(
+    request: Request,
     status: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -67,15 +96,21 @@ async def list_images(
     if status:
         q = q.where(Image.status == status)
     result = await db.execute(q)
-    return [ImageResponse.from_orm(img) for img in result.scalars()]
+    public_api_base = _public_api_base(request)
+    return [ImageResponse.from_orm(img, public_api_base) for img in result.scalars()]
 
 
 @router.get("/{image_id}", response_model=ImageResponse)
-async def get_image(image_id: str, db: AsyncSession = Depends(get_db)) -> ImageResponse:
+async def get_image(
+    image_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> ImageResponse:
     image = await db.get(Image, image_id)
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    return ImageResponse.from_orm(image)
+    public_api_base = _public_api_base(request)
+    return ImageResponse.from_orm(image, public_api_base)
 
 
 async def _delete_geoserver_store(store_name: str) -> None:

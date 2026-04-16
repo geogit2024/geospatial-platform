@@ -1,6 +1,6 @@
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -11,21 +11,81 @@ router = APIRouter(prefix="/services", tags=["ogc-services"])
 settings = get_settings()
 
 
-@router.get("/{image_id}/ogc")
-async def get_ogc_services(image_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+def _header_first_value(request: Request, header_name: str) -> str | None:
+    value = request.headers.get(header_name)
+    if not value:
+        return None
+    return value.split(",")[0].strip()
+
+
+def _public_api_base(request: Request) -> str:
+    forwarded_proto = _header_first_value(request, "x-forwarded-proto")
+    forwarded_host = _header_first_value(request, "x-forwarded-host")
+    host = forwarded_host or request.headers.get("host") or request.url.netloc
+    scheme = forwarded_proto or request.url.scheme or "http"
+
+    if host.endswith(".run.app"):
+        scheme = "https"
+    elif scheme not in ("http", "https"):
+        scheme = "https" if "https" in scheme else "http"
+
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def _public_ogc_urls(request: Request, image_id: str) -> dict[str, str]:
+    base = _public_api_base(request)
+    return {
+        "wms": f"{base}/api/services/{image_id}/wms-proxy",
+        "wmts": f"{base}/api/services/{image_id}/wmts-proxy",
+        "wcs": f"{base}/api/services/{image_id}/wcs-proxy",
+    }
+
+
+def _get_header(response: httpx.Response, name: str) -> str | None:
+    return response.headers.get(name)
+
+
+def _build_proxy_response(upstream: httpx.Response) -> Response:
+    headers: dict[str, str] = {}
+    for h in ("content-type", "cache-control", "etag", "last-modified", "expires", "pragma"):
+        v = _get_header(upstream, h)
+        if v:
+            headers[h] = v
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=headers)
+
+
+async def _get_published_image(image_id: str, db: AsyncSession) -> Image:
     image = await db.get(Image, image_id)
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-
     if image.status != ProcessingStatus.PUBLISHED:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Image not yet published. Current status: {image.status}",
-        )
+        raise HTTPException(status_code=409, detail=f"Image not published: {image.status}")
+    if not image.layer_name:
+        raise HTTPException(status_code=409, detail="Published image has no layer_name")
+    return image
 
-    wms = image.wms_url
-    wmts = image.wmts_url
-    wcs = image.wcs_url
+
+async def _proxy_get(url: str, params: dict[str, str]) -> Response:
+    auth = (settings.geoserver_admin_user, settings.geoserver_admin_password)
+    async with httpx.AsyncClient(timeout=60) as client:
+        try:
+            upstream = await client.get(url, params=params, auth=auth)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"GeoServer upstream error: {exc}") from exc
+    return _build_proxy_response(upstream)
+
+
+@router.get("/{image_id}/ogc")
+async def get_ogc_services(
+    image_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    image = await _get_published_image(image_id, db)
+    urls = _public_ogc_urls(request, image.id)
+    wms = urls["wms"]
+    wmts = urls["wmts"]
+    wcs = urls["wcs"]
 
     return {
         "image_id": image.id,
@@ -71,13 +131,7 @@ async def wms_proxy(
     fetches GeoServer over internal network (`GEOSERVER_URL`), avoiding mixed-content
     and invalid TLS issues on public :8080 endpoints.
     """
-    image = await db.get(Image, image_id)
-    if not image:
-        raise HTTPException(status_code=404, detail="Image not found")
-    if image.status != ProcessingStatus.PUBLISHED:
-        raise HTTPException(status_code=409, detail=f"Image not published: {image.status}")
-    if not image.layer_name:
-        raise HTTPException(status_code=409, detail="Published image has no layer_name")
+    image = await _get_published_image(image_id, db)
 
     wms_endpoint = (
         f"{settings.geoserver_url.rstrip('/')}/{settings.geoserver_workspace}/wms"
@@ -93,23 +147,34 @@ async def wms_proxy(
     if request_name != "getcapabilities":
         params["layers"] = image.layer_name
 
-    auth = (settings.geoserver_admin_user, settings.geoserver_admin_password)
-    async with httpx.AsyncClient(timeout=60) as client:
-        try:
-            upstream = await client.get(wms_endpoint, params=params, auth=auth)
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"WMS upstream error: {exc}") from exc
+    return await _proxy_get(wms_endpoint, params)
 
-    headers: dict[str, str] = {}
-    content_type = upstream.headers.get("content-type")
-    cache_control = upstream.headers.get("cache-control")
-    if content_type:
-        headers["content-type"] = content_type
-    if cache_control:
-        headers["cache-control"] = cache_control
 
-    return Response(
-        content=upstream.content,
-        status_code=upstream.status_code,
-        headers=headers,
+@router.get("/{image_id}/wmts-proxy")
+async def wmts_proxy(
+    image_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    await _get_published_image(image_id, db)
+    wmts_endpoint = f"{settings.geoserver_url.rstrip('/')}/gwc/service/wmts"
+    params = dict(request.query_params)
+    params.setdefault("REQUEST", "GetCapabilities")
+    return await _proxy_get(wmts_endpoint, params)
+
+
+@router.get("/{image_id}/wcs-proxy")
+async def wcs_proxy(
+    image_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    await _get_published_image(image_id, db)
+    wcs_endpoint = (
+        f"{settings.geoserver_url.rstrip('/')}/{settings.geoserver_workspace}/wcs"
     )
+    params = dict(request.query_params)
+    params.setdefault("service", "WCS")
+    params.setdefault("version", "2.0.1")
+    params.setdefault("request", "GetCapabilities")
+    return await _proxy_get(wcs_endpoint, params)
