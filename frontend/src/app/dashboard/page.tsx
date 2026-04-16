@@ -232,11 +232,6 @@ export default function DashboardPage() {
               </MetaRow>
             )}
 
-            {selected.wms_url && (
-              <MetaRow label="URL WMS (HTTPS)">
-                <CopyField value={selected.wms_url} />
-              </MetaRow>
-            )}
           </div>
 
           {/* OGC Services */}
@@ -248,9 +243,22 @@ export default function DashboardPage() {
                 <p className="text-sm text-gray-400">Carregando serviços…</p>
               ) : ogc ? (
                 <div className="space-y-4">
-                  <OGCService label="WMS" url={ogc.services.wms.getcapabilities} example={ogc.services.wms.getmap_example} serviceUrl={ogc.services.wms.getcapabilities.split("?")[0]} />
-                  <OGCService label="WMTS" url={ogc.services.wmts.getcapabilities} />
-                  <OGCService label="WCS" url={ogc.services.wcs.getcapabilities} />
+                  <OGCService
+                    label="WMS"
+                    url={ogc.services.wms.getcapabilities}
+                    example={ogc.services.wms.getmap_example}
+                    serviceUrl={ogc.services.wms.url}
+                  />
+                  <OGCService
+                    label="WMTS"
+                    url={ogc.services.wmts.getcapabilities}
+                    serviceUrl={ogc.services.wmts.url}
+                  />
+                  <OGCService
+                    label="WCS"
+                    url={ogc.services.wcs.getcapabilities}
+                    serviceUrl={ogc.services.wcs.url}
+                  />
 
                   <button
                     onClick={() => router.push(`/map?layer=${selected.layer_name}&imageId=${selected.id}`)}
