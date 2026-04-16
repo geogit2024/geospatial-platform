@@ -9,11 +9,13 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 import redis.asyncio as aioredis
@@ -40,6 +42,17 @@ logging.basicConfig(
 log = logging.getLogger("worker")
 
 settings = get_settings()
+
+
+def _build_redis_client() -> aioredis.Redis:
+    return aioredis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=30,
+        retry_on_timeout=True,
+        health_check_interval=30,
+    )
 
 
 # ─── DB helpers ────────────────────────────────────────────────────────────────
@@ -179,7 +192,7 @@ async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> 
 
         # Publish event for GeoServer publication — include native bbox + crs
         native = metadata["bbox"]
-        r = aioredis.from_url(settings.redis_url, decode_responses=True)
+        r = _build_redis_client()
         await r.xadd(
             settings.redis_stream_processed,
             {
@@ -430,10 +443,75 @@ def _start_health_server() -> None:
 
 # ─── Main ───────────────────────────────────────────────────────────────────────
 
+def _diag_gcs_connectivity() -> None:
+    """
+    Run at startup: probe TLS connectivity to storage.googleapis.com.
+    Tests two paths:
+      1. Root URL (CDN) — verifies basic TLS works
+      2. Simple object URL — verifies the XML API path works (auth not needed for this probe)
+    """
+    import subprocess
+
+    for label, probe_url in [
+        ("root", "https://storage.googleapis.com/"),
+        ("xml-api", "https://storage.googleapis.com/storage/v1/b/raw-images-geopublish/o"),
+    ]:
+        result = subprocess.run(
+            [
+                "curl", "-sS",
+                "--http1.1",
+                "--connect-timeout", "10",
+                "--max-time", "15",
+                "-o", "/dev/null",
+                "-w", "HTTP:%{http_code}  SSL-verify:%{ssl_verify_result}  err:%{errormsg}  time:%{time_total}s",
+                probe_url,
+            ],
+            capture_output=True, text=True,
+        )
+        level = logging.INFO if result.returncode == 0 else logging.ERROR
+        log.log(
+            level,
+            "[diag] GCS TLS probe [%s]  exit=%d  %s  stderr=%s",
+            label,
+            result.returncode,
+            result.stdout.strip() or "(no stdout)",
+            result.stderr.strip()[:400] or "(none)",
+        )
+
+
+def _diag_redis_connectivity() -> None:
+    """Best-effort startup probe for Redis TCP connectivity."""
+    try:
+        parsed = urlparse(settings.redis_url)
+        host = parsed.hostname or "(missing-host)"
+        port = parsed.port or 6379
+        with socket.create_connection((host, port), timeout=5):
+            log.info("[diag] Redis TCP probe OK  host=%s port=%s", host, port)
+    except Exception as exc:
+        log.error("[diag] Redis TCP probe FAILED  url=%s  error=%s", settings.redis_url, exc)
+
+
+async def _wait_for_redis_ready(r: aioredis.Redis) -> None:
+    """Retry Redis ping indefinitely so transient VPC startup delays don't kill worker boot."""
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await r.ping()
+            log.info("Redis ping OK (attempt %d)", attempt)
+            return
+        except Exception as exc:
+            log.error("Redis ping failed (attempt %d): %s", attempt, exc)
+            await asyncio.sleep(5)
+
+
 async def main() -> None:
     threading.Thread(target=_start_health_server, daemon=True).start()
     log.info("GDAL Worker starting...")
-    r = aioredis.from_url(settings.redis_url, decode_responses=True)
+    _diag_gcs_connectivity()
+    _diag_redis_connectivity()
+    r = _build_redis_client()
+    await _wait_for_redis_ready(r)
     await ensure_consumer_groups(r)
 
     consumer_name = f"worker-{os.getpid()}"

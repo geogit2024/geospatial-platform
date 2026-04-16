@@ -1,6 +1,6 @@
-// NEXT_PUBLIC_API_URL is set at build time via Docker ARG.
-// Falls back to relative URL for local dev (proxy via next.config.js rewrites).
-const BASE = process.env.NEXT_PUBLIC_API_URL || "";
+// Use relative /api so frontend always calls the local Next.js proxy route.
+// Proxy target is resolved at runtime via API_URL (Cloud Run-friendly).
+const BASE = "";
 
 export type ImageStatus =
   | "pending" | "uploading" | "uploaded" | "processing"

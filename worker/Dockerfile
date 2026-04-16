@@ -15,7 +15,8 @@ WORKDIR /worker
 # Install Python deps (--break-system-packages required on Ubuntu 22.04+)
 RUN pip3 install --no-cache-dir \
     "redis==5.0.4" \
-    "boto3==1.34.100" \
+    "google-cloud-storage==2.16.0" \
+    "google-auth==2.29.0" \
     "httpx==0.27.0" \
     "sqlalchemy[asyncio]==2.0.30" \
     "asyncpg==0.29.0" \

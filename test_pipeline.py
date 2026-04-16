@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.error
 
 FILE_PATH  = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\HP\Downloads\69dadc5f7405c8b660856fa1.tif"
-API_BASE   = "https://api-production-0f3d2.up.railway.app/api"
+API_BASE   = "https://geopublish-frontend-758336857324.us-central1.run.app/api"
 POLL_SEC   = 5
 TIMEOUT    = 300   # seconds to wait for published status
 
@@ -70,7 +70,7 @@ info(f"upload_url = {upload_url[:80]}...")
 
 # ─── Stage 2: Upload file ─────────────────────────────────────────────────────
 
-section("STAGE 2 — Upload file to MinIO")
+section("STAGE 2 — Upload file to object storage")
 info(f"File: {FILE_PATH}  ({os.path.getsize(FILE_PATH)/1024/1024:.1f} MB)")
 t0 = time.time()
 put_status = _put_file(upload_url, FILE_PATH)

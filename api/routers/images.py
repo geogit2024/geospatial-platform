@@ -9,6 +9,7 @@ from sqlalchemy import select
 from config import get_settings
 from database import get_db
 from models import Image
+from services.queue import publish_upload_event
 
 router = APIRouter(prefix="/images", tags=["images"])
 log = logging.getLogger("api.images")
@@ -90,6 +91,29 @@ async def _delete_geoserver_store(store_name: str) -> None:
                 log.warning(f"GeoServer DELETE store {store_name}: HTTP {r.status_code}")
     except Exception as e:
         log.warning(f"GeoServer store cleanup failed for {store_name}: {e}")
+
+
+@router.post("/{image_id}/retry", status_code=202)
+async def retry_image(image_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    """Re-queue a failed image for processing. Only valid for images in 'error' status."""
+    image = await db.get(Image, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+    if image.status not in ("error", "processing"):
+        raise HTTPException(status_code=400, detail=f"Cannot retry image in status '{image.status}'")
+    if not image.original_key:
+        raise HTTPException(status_code=400, detail="Image has no original_key — cannot retry")
+
+    image.status = "uploaded"
+    image.error_message = None
+    await db.commit()
+
+    await publish_upload_event(
+        image_id=image.id,
+        raw_key=image.original_key,
+        filename=image.filename,
+    )
+    return {"image_id": image.id, "status": "uploaded", "message": "Re-queued for processing"}
 
 
 @router.delete("/{image_id}", status_code=204)

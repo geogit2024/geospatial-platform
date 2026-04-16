@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { getImages, getOGCServices, type ImageRecord } from "@/lib/api";
+import { getImages, type ImageRecord } from "@/lib/api";
 import { cn, STATUS_LABEL } from "@/lib/utils";
 import StatusBadge from "@/components/StatusBadge";
 import { Layers, RefreshCw, Eye, EyeOff } from "lucide-react";
@@ -65,10 +65,10 @@ export default function MapClient({ initialLayerName, initialImageId }: { initia
       for (const img of images) {
         if (!img.layer_name) continue;
         try {
-          const ogc = await getOGCServices(img.id);
           newLayers.push({
             image: img,
-            wmsUrl: ogc.services.wms.url,
+            // Always use same-origin API proxy to avoid mixed-content/TLS issues.
+            wmsUrl: `/api/services/${img.id}/wms-proxy`,
             layerName: img.layer_name,
             visible: img.id === initialImageId || img.layer_name === initialLayerName,
             leafletLayer: null,

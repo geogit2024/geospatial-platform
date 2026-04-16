@@ -7,7 +7,7 @@ class Settings(BaseSettings):
 
     # Storage — GCS (credentials via ADC, no keys needed)
     storage_bucket_raw: str = "raw-images-geopublish"
-    storage_bucket_processed: str = "imagens-processadas-geopublicas"
+    storage_bucket_processed: str = "processed-images-geopublish"
 
     # Redis
     redis_url: str = "redis://redis:6379/0"

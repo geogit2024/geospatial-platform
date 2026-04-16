@@ -2,15 +2,16 @@
 GeoPublish — Professional Pipeline Test Suite
 =============================================
 Validates the complete flow:
-  Upload → MinIO Storage → Worker GDAL Pipeline → GeoServer Publication → OGC Services
+  Upload → Object Storage (GCS) → Worker GDAL Pipeline → GeoServer Publication → OGC Services
 
 Usage:
     python tests/test_pipeline.py [--file PATH] [--api URL] [--timeout SECONDS]
+                                  [--allow-non-gcp-storage]
 
 Example:
     python tests/test_pipeline.py \
         --file "C:/Users/HP/Downloads/o41078a5.tif" \
-        --api https://frontend-production-d8ee.up.railway.app \
+        --api https://geopublish-frontend-758336857324.us-central1.run.app \
         --timeout 300
 """
 
@@ -143,7 +144,7 @@ def test_api_health(suite: TestSuite, api: str):
 
 
 def test_request_signed_url(suite: TestSuite, api: str, filename: str,
-                            content_type: str) -> Optional[dict]:
+                            content_type: str, require_gcp_storage: bool) -> Optional[dict]:
     t0 = time.time()
     status, body = http_json("POST", f"{api}/api/upload/signed-url", {
         "filename": filename,
@@ -152,6 +153,12 @@ def test_request_signed_url(suite: TestSuite, api: str, filename: str,
     passed = status in (200, 201) and "upload_url" in body and "image_id" in body
     upload_url = body.get("upload_url", "")
     is_https   = upload_url.startswith("https://")
+    parsed     = urllib.parse.urlparse(upload_url) if upload_url else None
+    host       = (parsed.netloc or "").lower() if parsed else ""
+    is_gcp_storage = (
+        host == "storage.googleapis.com"
+        or host.endswith(".storage.googleapis.com")
+    )
     suite.record(TestResult(
         "Presigned URL generation",
         passed,
@@ -173,6 +180,18 @@ def test_request_signed_url(suite: TestSuite, api: str, filename: str,
         upload_url[:60] + "..." if passed else "",
         0,
     ))
+    gcs_check_passed = is_gcp_storage or (not require_gcp_storage)
+    detail = f"host={host or '(empty)'}"
+    if not require_gcp_storage and not is_gcp_storage:
+        detail += " (legacy allowed)"
+    suite.record(TestResult(
+        "Presigned URL targets GCS",
+        gcs_check_passed,
+        detail,
+        0,
+    ))
+    if require_gcp_storage and not is_gcp_storage:
+        return None
     return body if passed else None
 
 
@@ -183,7 +202,7 @@ def test_direct_upload(suite: TestSuite, upload_url: str, file_path: str) -> boo
     status, size = put_file(upload_url, file_path, ctype)
     passed = status in (200, 204)
     suite.record(TestResult(
-        "Direct file upload to MinIO (PUT presigned URL)",
+        "Direct file upload to object storage (PUT presigned URL)",
         passed,
         f"{size/1024/1024:.2f} MB uploaded → HTTP {status}" if passed
         else f"HTTP {status} — upload failed",
@@ -365,13 +384,14 @@ def test_dashboard_listing(suite: TestSuite, api: str, image_id: str):
 #  Main runner
 # ─────────────────────────────────────────────
 
-def run(file_path: str, api: str, timeout: int):
+def run(file_path: str, api: str, timeout: int, require_gcp_storage: bool):
     bar = "═" * 56
     print(f"\n{BOLD}{CYAN}{bar}{RESET}")
     print(f"{BOLD}{CYAN}  GeoPublish Pipeline Test Suite{RESET}")
     print(f"{CYAN}  File   : {file_path}{RESET}")
     print(f"{CYAN}  API    : {api}{RESET}")
     print(f"{CYAN}  Timeout: {timeout}s{RESET}")
+    print(f"{CYAN}  Require GCS URL: {require_gcp_storage}{RESET}")
     print(f"{BOLD}{CYAN}{bar}{RESET}\n")
 
     # Validate local file
@@ -395,7 +415,9 @@ def run(file_path: str, api: str, timeout: int):
 
     # ── Phase 2: Upload flow ──────────────────
     print(f"\n{BOLD}Phase 2 — Upload Flow{RESET}")
-    signed = test_request_signed_url(suite, api, filename, "image/tiff")
+    signed = test_request_signed_url(
+        suite, api, filename, "image/tiff", require_gcp_storage
+    )
     if not signed:
         suite.summary()
         sys.exit(1)
@@ -440,12 +462,22 @@ if __name__ == "__main__":
         help="Path to GeoTIFF test file",
     )
     parser.add_argument(
-        "--api", default="https://frontend-production-d8ee.up.railway.app",
+        "--api", default="https://geopublish-frontend-758336857324.us-central1.run.app",
         help="Frontend/API base URL",
     )
     parser.add_argument(
         "--timeout", type=int, default=300,
         help="Max seconds to wait for pipeline completion (default: 300)",
     )
+    parser.add_argument(
+        "--allow-non-gcp-storage",
+        action="store_true",
+        help="Allow presigned upload URLs outside GCS (legacy environments).",
+    )
     args = parser.parse_args()
-    run(args.file, args.api, args.timeout)
+    run(
+        args.file,
+        args.api,
+        args.timeout,
+        require_gcp_storage=not args.allow_non_gcp_storage,
+    )

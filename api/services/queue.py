@@ -6,10 +6,21 @@ settings = get_settings()
 _redis: aioredis.Redis | None = None
 
 
+def _build_redis_client() -> aioredis.Redis:
+    return aioredis.from_url(
+        settings.redis_url,
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=15,
+        retry_on_timeout=True,
+        health_check_interval=30,
+    )
+
+
 async def get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
-        _redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        _redis = _build_redis_client()
     return _redis
 
 
