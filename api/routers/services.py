@@ -166,12 +166,12 @@ def _rewrite_wms_capabilities_xml(
 @router.get("/{image_id}/ogc")
 async def get_ogc_services(
     image_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     image = await _get_published_image(image_id, db)
-    wms = _public_geoserver_service_url(
-        image.wms_url, f"{settings.geoserver_workspace}/wms"
-    )
+    # WMS must be image-specific so clients (ArcGIS) see only this layer.
+    wms = _public_ogc_urls(request, image.id)["wms"]
     wmts = _public_geoserver_service_url(image.wmts_url, "gwc/service/wmts")
     wcs = _public_geoserver_service_url(
         image.wcs_url, f"{settings.geoserver_workspace}/wcs"
