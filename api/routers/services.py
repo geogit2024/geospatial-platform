@@ -1,5 +1,4 @@
 import httpx
-import re
 import xml.etree.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -116,26 +115,33 @@ def _rewrite_wms_capabilities_xml(
     """
     geoserver_base = settings.geoserver_url.rstrip("/")
     public_wms = _public_ogc_urls(request, image_id)["wms"]
-    href_pattern = re.compile(r'(xlink:href=")([^"]+)(")')
-
-    def _rewrite_href(match: re.Match[str]) -> str:
-        href = match.group(2)
-        if not href.startswith(geoserver_base):
-            return match.group(0)
-
-        query = ""
-        if "?" in href:
-            query = href.split("?", 1)[1]
-
-        rewritten = f"{public_wms}?{query}" if query else public_wms
-        return f'{match.group(1)}{rewritten}{match.group(3)}'
-
     filtered_xml = _filter_wms_capabilities_to_layer(xml_text, layer_name)
-    rewritten_xml = href_pattern.sub(_rewrite_href, filtered_xml)
 
+    try:
+        root = ET.fromstring(filtered_xml)
+    except ET.ParseError:
+        return filtered_xml
+
+    xlink_href = "{http://www.w3.org/1999/xlink}href"
+    schema_loc = "{http://www.w3.org/2001/XMLSchema-instance}schemaLocation"
     internal_schema = f"{geoserver_base}/schemas/wms/1.3.0/capabilities_1_3_0.xsd"
     ogc_schema = "https://schemas.opengis.net/wms/1.3.0/capabilities_1_3_0.xsd"
-    return rewritten_xml.replace(internal_schema, ogc_schema)
+
+    for elem in root.iter():
+        href_value = elem.attrib.get(xlink_href) or elem.attrib.get("xlink:href")
+        if href_value and href_value.startswith(geoserver_base):
+            query = href_value.split("?", 1)[1] if "?" in href_value else ""
+            new_href = f"{public_wms}?{query}" if query else public_wms
+            if xlink_href in elem.attrib:
+                elem.attrib[xlink_href] = new_href
+            if "xlink:href" in elem.attrib:
+                elem.attrib["xlink:href"] = new_href
+
+    schema_value = root.attrib.get(schema_loc)
+    if schema_value:
+        root.attrib[schema_loc] = schema_value.replace(internal_schema, ogc_schema)
+
+    return ET.tostring(root, encoding="unicode")
 
 
 @router.get("/{image_id}/ogc")
