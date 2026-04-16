@@ -25,7 +25,7 @@ async function proxy(request: NextRequest, path: string[]): Promise<NextResponse
     headers,
     body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
     duplex: "half",
-    redirect: "manual",
+    redirect: "follow",
   } as RequestInit);
 
   return new NextResponse(response.body, {

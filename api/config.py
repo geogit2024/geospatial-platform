@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # GeoServer
     geoserver_url: str = "http://geoserver:8080/geoserver"
+    geoserver_public_url: str = ""
     geoserver_admin_user: str = "admin"
     geoserver_admin_password: str = "geoserver"
     geoserver_workspace: str = "geoimages"

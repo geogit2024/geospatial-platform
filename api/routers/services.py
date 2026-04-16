@@ -42,6 +42,25 @@ def _public_ogc_urls(request: Request, image_id: str) -> dict[str, str]:
     }
 
 
+def _public_geoserver_service_url(raw_url: str | None, service_path: str) -> str:
+    """
+    Build a public HTTPS OGC endpoint for external consumers (ArcGIS/QGIS/etc).
+    """
+    if raw_url and raw_url.startswith("https://"):
+        return raw_url
+
+    public_base = settings.geoserver_public_url.rstrip("/")
+    if public_base:
+        if raw_url and "/geoserver/" in raw_url:
+            suffix = raw_url.split("/geoserver/", 1)[1].lstrip("/")
+            return f"{public_base}/{suffix}"
+        return f"{public_base}/{service_path.lstrip('/')}"
+
+    if raw_url:
+        return raw_url
+    return f"{settings.geoserver_url.rstrip('/')}/{service_path.lstrip('/')}"
+
+
 def _get_header(response: httpx.Response, name: str) -> str | None:
     return response.headers.get(name)
 
@@ -147,14 +166,16 @@ def _rewrite_wms_capabilities_xml(
 @router.get("/{image_id}/ogc")
 async def get_ogc_services(
     image_id: str,
-    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     image = await _get_published_image(image_id, db)
-    urls = _public_ogc_urls(request, image.id)
-    wms = urls["wms"]
-    wmts = urls["wmts"]
-    wcs = urls["wcs"]
+    wms = _public_geoserver_service_url(
+        image.wms_url, f"{settings.geoserver_workspace}/wms"
+    )
+    wmts = _public_geoserver_service_url(image.wmts_url, "gwc/service/wmts")
+    wcs = _public_geoserver_service_url(
+        image.wcs_url, f"{settings.geoserver_workspace}/wcs"
+    )
 
     return {
         "image_id": image.id,

@@ -1,7 +1,7 @@
 from typing import Optional
 import logging
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -16,25 +16,23 @@ log = logging.getLogger("api.images")
 settings = get_settings()
 
 
-def _header_first_value(request: Request, header_name: str) -> Optional[str]:
-    value = request.headers.get(header_name)
-    if not value:
-        return None
-    return value.split(",")[0].strip()
+def _normalize_geoserver_url(raw_url: Optional[str], service_path: str) -> Optional[str]:
+    """
+    Return public HTTPS GeoServer URL when GEOSERVER_PUBLIC_URL is configured.
+    Falls back to the URL stored in DB.
+    """
+    if raw_url and raw_url.startswith("https://"):
+        return raw_url
 
+    public_base = settings.geoserver_public_url.rstrip("/")
+    if not public_base:
+        return raw_url
 
-def _public_api_base(request: Request) -> str:
-    forwarded_proto = _header_first_value(request, "x-forwarded-proto")
-    forwarded_host = _header_first_value(request, "x-forwarded-host")
-    host = forwarded_host or request.headers.get("host") or request.url.netloc
-    scheme = forwarded_proto or request.url.scheme or "http"
+    if raw_url and "/geoserver/" in raw_url:
+        suffix = raw_url.split("/geoserver/", 1)[1].lstrip("/")
+        return f"{public_base}/{suffix}"
 
-    if host.endswith(".run.app"):
-        scheme = "https"
-    elif scheme not in ("http", "https"):
-        scheme = "https" if "https" in scheme else "http"
-
-    return f"{scheme}://{host}".rstrip("/")
+    return f"{public_base}/{service_path.lstrip('/')}"
 
 
 class ImageResponse(BaseModel):
@@ -52,7 +50,7 @@ class ImageResponse(BaseModel):
     updated_at: str
 
     @classmethod
-    def from_orm(cls, img: Image, public_api_base: Optional[str] = None) -> "ImageResponse":
+    def from_orm(cls, img: Image) -> "ImageResponse":
         bbox = None
         if img.bbox_minx is not None:
             bbox = {
@@ -61,13 +59,9 @@ class ImageResponse(BaseModel):
                 "maxx": img.bbox_maxx,
                 "maxy": img.bbox_maxy,
             }
-        wms_url = img.wms_url
-        wmts_url = img.wmts_url
-        wcs_url = img.wcs_url
-        if public_api_base and img.layer_name:
-            wms_url = f"{public_api_base}/api/services/{img.id}/wms-proxy"
-            wmts_url = f"{public_api_base}/api/services/{img.id}/wmts-proxy"
-            wcs_url = f"{public_api_base}/api/services/{img.id}/wcs-proxy"
+        wms_url = _normalize_geoserver_url(img.wms_url, f"{settings.geoserver_workspace}/wms")
+        wmts_url = _normalize_geoserver_url(img.wmts_url, "gwc/service/wmts")
+        wcs_url = _normalize_geoserver_url(img.wcs_url, f"{settings.geoserver_workspace}/wcs")
         return cls(
             id=img.id,
             filename=img.filename,
@@ -86,7 +80,6 @@ class ImageResponse(BaseModel):
 
 @router.get("/", response_model=list[ImageResponse])
 async def list_images(
-    request: Request,
     status: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -96,21 +89,18 @@ async def list_images(
     if status:
         q = q.where(Image.status == status)
     result = await db.execute(q)
-    public_api_base = _public_api_base(request)
-    return [ImageResponse.from_orm(img, public_api_base) for img in result.scalars()]
+    return [ImageResponse.from_orm(img) for img in result.scalars()]
 
 
 @router.get("/{image_id}", response_model=ImageResponse)
 async def get_image(
     image_id: str,
-    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> ImageResponse:
     image = await db.get(Image, image_id)
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    public_api_base = _public_api_base(request)
-    return ImageResponse.from_orm(image, public_api_base)
+    return ImageResponse.from_orm(image)
 
 
 async def _delete_geoserver_store(store_name: str) -> None:
