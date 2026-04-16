@@ -1,4 +1,5 @@
 import httpx
+import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -75,6 +76,34 @@ async def _proxy_get(url: str, params: dict[str, str]) -> Response:
     return _build_proxy_response(upstream)
 
 
+def _rewrite_wms_capabilities_xml(xml_text: str, image_id: str, request: Request) -> str:
+    """
+    Replace internal GeoServer xlink:href URLs in WMS capabilities with the
+    public HTTPS proxy endpoint so external clients (ArcGIS Online) can use it.
+    """
+    geoserver_base = settings.geoserver_url.rstrip("/")
+    public_wms = _public_ogc_urls(request, image_id)["wms"]
+    href_pattern = re.compile(r'(xlink:href=")([^"]+)(")')
+
+    def _rewrite_href(match: re.Match[str]) -> str:
+        href = match.group(2)
+        if not href.startswith(geoserver_base):
+            return match.group(0)
+
+        query = ""
+        if "?" in href:
+            query = href.split("?", 1)[1]
+
+        rewritten = f"{public_wms}?{query}" if query else public_wms
+        return f'{match.group(1)}{rewritten}{match.group(3)}'
+
+    rewritten_xml = href_pattern.sub(_rewrite_href, xml_text)
+
+    internal_schema = f"{geoserver_base}/schemas/wms/1.3.0/capabilities_1_3_0.xsd"
+    ogc_schema = "https://schemas.opengis.net/wms/1.3.0/capabilities_1_3_0.xsd"
+    return rewritten_xml.replace(internal_schema, ogc_schema)
+
+
 @router.get("/{image_id}/ogc")
 async def get_ogc_services(
     image_id: str,
@@ -139,15 +168,33 @@ async def wms_proxy(
 
     params = dict(request.query_params)
     params.setdefault("service", "WMS")
-    params.setdefault("request", "GetMap")
-    params.setdefault("version", "1.1.1")
+    params.setdefault("request", "GetCapabilities")
+    params.setdefault("version", "1.3.0")
     params.setdefault("format", "image/png")
     params.setdefault("transparent", "true")
     request_name = str(params.get("request", "")).lower()
-    if request_name != "getcapabilities":
+    if request_name in ("getmap", "getfeatureinfo", "getlegendgraphic"):
         params["layers"] = image.layer_name
+    proxied = await _proxy_get(wms_endpoint, params)
+    if request_name != "getcapabilities":
+        return proxied
 
-    return await _proxy_get(wms_endpoint, params)
+    content_type = proxied.headers.get("content-type", "")
+    if "xml" not in content_type.lower():
+        return proxied
+
+    try:
+        text = proxied.body.decode("utf-8")
+    except UnicodeDecodeError:
+        text = proxied.body.decode("latin-1")
+
+    rewritten = _rewrite_wms_capabilities_xml(text, image.id, request)
+    headers: dict[str, str] = {}
+    cache_control = proxied.headers.get("cache-control")
+    if cache_control:
+        headers["cache-control"] = cache_control
+    headers["content-type"] = content_type or "text/xml; charset=UTF-8"
+    return Response(content=rewritten, status_code=proxied.status_code, headers=headers)
 
 
 @router.get("/{image_id}/wmts-proxy")
