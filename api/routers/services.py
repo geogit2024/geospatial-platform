@@ -133,6 +133,7 @@ def _rewrite_wms_capabilities_xml(
     public HTTPS proxy endpoint so external clients (ArcGIS Online) can use it.
     """
     geoserver_base = settings.geoserver_url.rstrip("/")
+    geoserver_public_base = settings.geoserver_public_url.rstrip("/")
     public_wms = _public_ogc_urls(request, image_id)["wms"]
     filtered_xml = _filter_wms_capabilities_to_layer(xml_text, layer_name)
 
@@ -141,14 +142,26 @@ def _rewrite_wms_capabilities_xml(
     except ET.ParseError:
         return filtered_xml
 
+    ET.register_namespace("", "http://www.opengis.net/wms")
+    ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
+    ET.register_namespace("xsi", "http://www.w3.org/2001/XMLSchema-instance")
+
     xlink_href = "{http://www.w3.org/1999/xlink}href"
     schema_loc = "{http://www.w3.org/2001/XMLSchema-instance}schemaLocation"
     internal_schema = f"{geoserver_base}/schemas/wms/1.3.0/capabilities_1_3_0.xsd"
+    public_schema = (
+        f"{geoserver_public_base}/schemas/wms/1.3.0/capabilities_1_3_0.xsd"
+        if geoserver_public_base
+        else ""
+    )
     ogc_schema = "https://schemas.opengis.net/wms/1.3.0/capabilities_1_3_0.xsd"
 
     for elem in root.iter():
         href_value = elem.attrib.get(xlink_href) or elem.attrib.get("xlink:href")
-        if href_value and href_value.startswith(geoserver_base):
+        if href_value and (
+            href_value.startswith(geoserver_base)
+            or (geoserver_public_base and href_value.startswith(geoserver_public_base))
+        ):
             query = href_value.split("?", 1)[1] if "?" in href_value else ""
             new_href = f"{public_wms}?{query}" if query else public_wms
             if xlink_href in elem.attrib:
@@ -158,7 +171,10 @@ def _rewrite_wms_capabilities_xml(
 
     schema_value = root.attrib.get(schema_loc)
     if schema_value:
-        root.attrib[schema_loc] = schema_value.replace(internal_schema, ogc_schema)
+        rewritten_schema = schema_value.replace(internal_schema, ogc_schema)
+        if public_schema:
+            rewritten_schema = rewritten_schema.replace(public_schema, ogc_schema)
+        root.attrib[schema_loc] = rewritten_schema
 
     return ET.tostring(root, encoding="unicode")
 
