@@ -1,5 +1,6 @@
 import httpx
 import re
+import xml.etree.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -76,7 +77,39 @@ async def _proxy_get(url: str, params: dict[str, str]) -> Response:
     return _build_proxy_response(upstream)
 
 
-def _rewrite_wms_capabilities_xml(xml_text: str, image_id: str, request: Request) -> str:
+def _filter_wms_capabilities_to_layer(xml_text: str, layer_name: str) -> str:
+    """
+    Keep only the target layer in GetCapabilities so clients like ArcGIS
+    do not pick a different layer from the same workspace.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return xml_text
+
+    ns = {"w": "http://www.opengis.net/wms"}
+    capability_layer = root.find(".//w:Capability/w:Layer", ns)
+    if capability_layer is None:
+        return xml_text
+
+    target = layer_name.split(":")[-1]
+    child_layers = capability_layer.findall("w:Layer", ns)
+    kept = 0
+    for lyr in child_layers:
+        name_el = lyr.find("w:Name", ns)
+        if name_el is not None and name_el.text == target:
+            kept += 1
+            continue
+        capability_layer.remove(lyr)
+
+    if kept == 0:
+        return xml_text
+    return ET.tostring(root, encoding="unicode")
+
+
+def _rewrite_wms_capabilities_xml(
+    xml_text: str, image_id: str, request: Request, layer_name: str
+) -> str:
     """
     Replace internal GeoServer xlink:href URLs in WMS capabilities with the
     public HTTPS proxy endpoint so external clients (ArcGIS Online) can use it.
@@ -97,7 +130,8 @@ def _rewrite_wms_capabilities_xml(xml_text: str, image_id: str, request: Request
         rewritten = f"{public_wms}?{query}" if query else public_wms
         return f'{match.group(1)}{rewritten}{match.group(3)}'
 
-    rewritten_xml = href_pattern.sub(_rewrite_href, xml_text)
+    filtered_xml = _filter_wms_capabilities_to_layer(xml_text, layer_name)
+    rewritten_xml = href_pattern.sub(_rewrite_href, filtered_xml)
 
     internal_schema = f"{geoserver_base}/schemas/wms/1.3.0/capabilities_1_3_0.xsd"
     ogc_schema = "https://schemas.opengis.net/wms/1.3.0/capabilities_1_3_0.xsd"
@@ -166,15 +200,19 @@ async def wms_proxy(
         f"{settings.geoserver_url.rstrip('/')}/{settings.geoserver_workspace}/wms"
     )
 
-    params = dict(request.query_params)
+    # Normalize WMS params to lowercase keys because some clients (ArcGIS)
+    # send uppercase QUERY keys (REQUEST, LAYERS, CRS, ...).
+    params = {k.lower(): v for k, v in request.query_params.items()}
     params.setdefault("service", "WMS")
     params.setdefault("request", "GetCapabilities")
     params.setdefault("version", "1.3.0")
     params.setdefault("format", "image/png")
     params.setdefault("transparent", "true")
     request_name = str(params.get("request", "")).lower()
-    if request_name in ("getmap", "getfeatureinfo", "getlegendgraphic"):
-        params["layers"] = image.layer_name
+    if request_name in ("getmap", "getfeatureinfo"):
+        params.setdefault("layers", image.layer_name)
+    elif request_name == "getlegendgraphic":
+        params.setdefault("layer", image.layer_name)
     proxied = await _proxy_get(wms_endpoint, params)
     if request_name != "getcapabilities":
         return proxied
@@ -188,7 +226,7 @@ async def wms_proxy(
     except UnicodeDecodeError:
         text = proxied.body.decode("latin-1")
 
-    rewritten = _rewrite_wms_capabilities_xml(text, image.id, request)
+    rewritten = _rewrite_wms_capabilities_xml(text, image.id, request, image.layer_name)
     headers: dict[str, str] = {}
     cache_control = proxied.headers.get("cache-control")
     if cache_control:
