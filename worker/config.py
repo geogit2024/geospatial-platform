@@ -33,9 +33,9 @@ class WorkerSettings(BaseSettings):
     worker_recover_publishing_minutes: int = 20
 
     # Redis stream resilience
-    redis_claim_min_idle_ms: int = 120000
+    redis_claim_min_idle_ms: int = 900000
     redis_claim_batch: int = 10
-    redis_claim_interval_seconds: int = 15
+    redis_claim_interval_seconds: int = 30
 
     class Config:
         env_file = ".env"

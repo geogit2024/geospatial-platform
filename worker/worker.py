@@ -78,6 +78,45 @@ async def _touch_image(image_id: str) -> None:
     await _update_image(image_id)
 
 
+async def _get_image_runtime_state(image_id: str) -> Optional[dict]:
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as session:
+        row = await session.execute(
+            text(
+                """
+                SELECT status, updated_at, original_key, processed_key, filename
+                FROM images
+                WHERE id = :image_id
+                """
+            ),
+            {"image_id": image_id},
+        )
+        record = row.first()
+
+    if not record:
+        return None
+
+    return {
+        "status": record[0],
+        "updated_at": record[1],
+        "original_key": record[2],
+        "processed_key": record[3],
+        "filename": record[4],
+    }
+
+
+def _is_recent_heartbeat(updated_at: Optional[datetime]) -> bool:
+    if not isinstance(updated_at, datetime):
+        return False
+
+    if updated_at.tzinfo is not None:
+        updated_at = updated_at.replace(tzinfo=None)
+
+    grace_seconds = max(int(settings.worker_heartbeat_seconds) * 3, 60)
+    return updated_at >= (datetime.utcnow() - timedelta(seconds=grace_seconds))
+
+
 async def _blocking_call(func, *args):
     return await asyncio.to_thread(func, *args)
 
@@ -468,25 +507,65 @@ async def recover_stalled_images(r: aioredis.Redis) -> None:
 
 
 async def _handle_stream_message(stream: str, data: dict) -> None:
+    image_id = data.get("image_id")
+    if not image_id:
+        log.warning("Skipping malformed stream message without image_id: %s", data)
+        return
+
+    state = await _get_image_runtime_state(image_id)
+    if not state:
+        log.warning("[%s] Skipping stream message: image no longer exists in DB", image_id)
+        return
+
+    status = str(state.get("status") or "").lower()
+    has_recent_heartbeat = _is_recent_heartbeat(state.get("updated_at"))
+
     if stream == settings.redis_stream_uploaded:
+        if status in {"processed", "publishing", "published"}:
+            log.info(
+                "[%s] Skip upload event: current status is '%s' (already advanced)",
+                image_id,
+                status,
+            )
+            return
+
+        if status == "processing" and has_recent_heartbeat:
+            log.info("[%s] Skip upload event: already processing with active heartbeat", image_id)
+            return
+
+        if status == "processing" and not has_recent_heartbeat:
+            log.warning("[%s] Upload event recovering stale processing without heartbeat", image_id)
+
         await process_uploaded_image(
-            image_id=data["image_id"],
+            image_id=image_id,
             raw_key=data["raw_key"],
             filename=data["filename"],
         )
         return
 
     if stream == settings.redis_stream_processed:
+        if status == "published":
+            log.info("[%s] Skip publish event: already published", image_id)
+            return
+
+        if status == "publishing" and has_recent_heartbeat:
+            log.info("[%s] Skip publish event: already publishing with active heartbeat", image_id)
+            return
+
+        if status in {"uploaded", "processing"}:
+            log.info("[%s] Skip publish event: status '%s' not ready for publication", image_id, status)
+            return
+
         native_bbox_raw = data.get("native_bbox")
         native_bbox = None
         if native_bbox_raw:
             try:
                 native_bbox = json.loads(native_bbox_raw)
             except Exception as exc:
-                log.warning("[%s] Invalid native_bbox payload: %s", data.get("image_id"), exc)
+                log.warning("[%s] Invalid native_bbox payload: %s", image_id, exc)
 
         await publish_processed_image(
-            image_id=data["image_id"],
+            image_id=image_id,
             gs_data_path=data["gs_data_path"],
             filename=data["filename"],
             native_crs=data.get("native_crs", "EPSG:3857"),
@@ -731,7 +810,7 @@ async def main() -> None:
     await ensure_consumer_groups(r)
     await recover_stalled_images(r)
 
-    consumer_name = f"worker-{os.getpid()}"
+    consumer_name = f"worker-{socket.gethostname()}-{os.getpid()}"
     log.info(
         "Consumer: %s  |  streams: %s, %s  |  heartbeat=%ss  reclaim_idle_ms=%s",
         consumer_name,
