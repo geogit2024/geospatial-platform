@@ -24,6 +24,7 @@ import {
   getOGCServices,
   getImageDownloadUrl,
   type ImageRecord,
+  type ImageStatus,
   type OGCServices,
 } from "@/lib/api";
 import { cn, STATUS_IS_ACTIVE, formatDate } from "@/lib/utils";
@@ -37,6 +38,28 @@ const POLL_MS = 5000;
 type DashboardTab = "layers" | "metrics";
 type LayersScopeTab = "mine" | "organization";
 type LayerStatusFilter = "all" | "published" | "processing" | "error";
+
+const STATUS_PROGRESS: Record<ImageStatus, number | null> = {
+  pending: 10,
+  uploading: 22,
+  uploaded: 38,
+  processing: 62,
+  processed: 82,
+  publishing: 94,
+  published: null,
+  error: null,
+};
+
+const STATUS_STEP_INDEX: Record<ImageStatus, number | null> = {
+  pending: 1,
+  uploading: 2,
+  uploaded: 3,
+  processing: 4,
+  processed: 5,
+  publishing: 6,
+  published: null,
+  error: null,
+};
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -342,6 +365,7 @@ export default function DashboardPage() {
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-[#dbe8fb] truncate">{img.filename}</p>
                       <p className="text-xs text-[#7f97b5] mt-0.5">{formatDate(img.created_at)}</p>
+                      <ProcessingProgress status={img.status} className="mt-2 max-w-[440px]" />
                     </div>
 
                     {img.crs && (
@@ -395,6 +419,7 @@ export default function DashboardPage() {
                 <div className="mt-3">
                   <StatusBadge status={selected.status} />
                 </div>
+                <ProcessingProgress status={selected.status} className="mt-3" />
                 {selected.error_message && (
                   <div className="mt-3 p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
                     {selected.error_message}
@@ -560,6 +585,35 @@ function OGCService({
           <CopyField value={serviceUrl} />
         </div>
       )}
+    </div>
+  );
+}
+
+function ProcessingProgress({
+  status,
+  className,
+}: {
+  status: ImageStatus;
+  className?: string;
+}) {
+  const progress = STATUS_PROGRESS[status];
+  const step = STATUS_STEP_INDEX[status];
+
+  if (progress === null || step === null) return null;
+
+  return (
+    <div className={cn("space-y-1.5", className)}>
+      <div className="flex items-center justify-between text-[11px] text-[#8fa8c6]">
+        <span>Progresso do processamento</span>
+        <span>{progress}%</span>
+      </div>
+      <div className="h-2 rounded-full bg-[#0c1727] border border-[#20344d] overflow-hidden">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-[#1fa3ff] to-[#4dd4ff] transition-all duration-500 animate-pulse"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+      <p className="text-[11px] text-[#6e86a8]">Etapa {step}/6 em andamento</p>
     </div>
   );
 }
