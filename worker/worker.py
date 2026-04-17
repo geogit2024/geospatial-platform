@@ -13,6 +13,7 @@ import socket
 import tempfile
 import threading
 import time
+import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -810,7 +811,8 @@ async def main() -> None:
     await ensure_consumer_groups(r)
     await recover_stalled_images(r)
 
-    consumer_name = f"worker-{socket.gethostname()}-{os.getpid()}"
+    instance_token = os.environ.get("K_REVISION", "local")
+    consumer_name = f"worker-{instance_token}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     log.info(
         "Consumer: %s  |  streams: %s, %s  |  heartbeat=%ss  reclaim_idle_ms=%s",
         consumer_name,
