@@ -1,0 +1,5 @@
+steps:
+- name: gcr.io/cloud-builders/docker
+  args: ['build', '-f', 'Dockerfile.api', '-t', 'us-central1-docker.pkg.dev/geopublish/cloud-run-manual/geopublish-api:billing-real-20260416', '.']
+images:
+- 'us-central1-docker.pkg.dev/geopublish/cloud-run-manual/geopublish-api:billing-real-20260416'

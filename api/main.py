@@ -9,7 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
 from database import init_db
-from routers import images_router, services_router, upload_router
+from routers import (
+    images_router,
+    metrics_router,
+    notifications_router,
+    services_router,
+    upload_router,
+)
 
 settings = get_settings()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -54,6 +60,7 @@ origins = [o.strip() for o in settings.cors_origins.split(",")]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=(settings.cors_origin_regex or None),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -62,6 +69,8 @@ app.add_middleware(
 app.include_router(upload_router, prefix="/api")
 app.include_router(images_router, prefix="/api")
 app.include_router(services_router, prefix="/api")
+app.include_router(notifications_router, prefix="/api")
+app.include_router(metrics_router, prefix="/api")
 
 
 @app.get("/")

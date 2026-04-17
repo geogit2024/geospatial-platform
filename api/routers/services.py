@@ -1,5 +1,7 @@
 import httpx
+import math
 import xml.etree.ElementTree as ET
+from copy import deepcopy
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +42,79 @@ def _public_ogc_urls(request: Request, image_id: str) -> dict[str, str]:
         "wmts": f"{base}/api/services/{image_id}/wmts-proxy",
         "wcs": f"{base}/api/services/{image_id}/wcs-proxy",
     }
+
+
+def _is_arcgis_request(request: Request) -> bool:
+    origin = (request.headers.get("origin") or "").lower()
+    referer = (request.headers.get("referer") or "").lower()
+    marker = "arcgis.com"
+    marker2 = "arcgisonline.com"
+    return (
+        marker in origin
+        or marker2 in origin
+        or marker in referer
+        or marker2 in referer
+    )
+
+
+def _parse_bbox(value: str | None) -> tuple[float, float, float, float] | None:
+    if not value:
+        return None
+    parts = [p.strip() for p in value.split(",")]
+    if len(parts) != 4:
+        return None
+    try:
+        minx, miny, maxx, maxy = (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+    except ValueError:
+        return None
+    if minx > maxx or miny > maxy:
+        return None
+    return (minx, miny, maxx, maxy)
+
+
+def _parse_positive_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _bbox_intersects(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> bool:
+    return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
+
+
+def _is_likely_lonlat_bbox(bbox: tuple[float, float, float, float]) -> bool:
+    minx, miny, maxx, maxy = bbox
+    return (
+        -180.0 <= minx <= 180.0
+        and -180.0 <= maxx <= 180.0
+        and -90.0 <= miny <= 90.0
+        and -90.0 <= maxy <= 90.0
+    )
+
+
+def _lonlat_to_mercator_xy(lon: float, lat: float) -> tuple[float, float]:
+    # Clamp latitude to WebMercator valid range.
+    clamped_lat = max(min(lat, 85.05112878), -85.05112878)
+    x = lon * 20037508.34 / 180.0
+    y = math.log(math.tan((90.0 + clamped_lat) * math.pi / 360.0)) / (math.pi / 180.0)
+    y = y * 20037508.34 / 180.0
+    return (x, y)
+
+
+def _bbox_4326_to_3857(bbox: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    minx, miny, maxx, maxy = bbox
+    x1, y1 = _lonlat_to_mercator_xy(minx, miny)
+    x2, y2 = _lonlat_to_mercator_xy(maxx, maxy)
+    return (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
 
 
 def _public_geoserver_service_url(raw_url: str | None, service_path: str) -> str:
@@ -113,15 +188,41 @@ def _filter_wms_capabilities_to_layer(xml_text: str, layer_name: str) -> str:
     target = layer_name.split(":")[-1]
     child_layers = capability_layer.findall("w:Layer", ns)
     kept = 0
+    kept_layer: ET.Element | None = None
     for lyr in child_layers:
         name_el = lyr.find("w:Name", ns)
         if name_el is not None and name_el.text == target:
             kept += 1
+            kept_layer = lyr
             continue
         capability_layer.remove(lyr)
 
-    if kept == 0:
+    if kept == 0 or kept_layer is None:
         return xml_text
+
+    # GeoServer keeps aggregate CRS/BBOX at parent layer level. For single-layer
+    # capabilities (used by ArcGIS), keep parent metadata aligned with the target
+    # child extent to avoid clients requesting tiles from unrelated extents.
+    for tag in (
+        "w:CRS",
+        "w:SRS",
+        "w:EX_GeographicBoundingBox",
+        "w:LatLonBoundingBox",
+        "w:BoundingBox",
+    ):
+        for elem in capability_layer.findall(tag, ns):
+            capability_layer.remove(elem)
+
+    for tag in (
+        "w:CRS",
+        "w:SRS",
+        "w:EX_GeographicBoundingBox",
+        "w:LatLonBoundingBox",
+        "w:BoundingBox",
+    ):
+        for elem in kept_layer.findall(tag, ns):
+            capability_layer.insert(0, deepcopy(elem))
+
     return ET.tostring(root, encoding="unicode")
 
 
@@ -253,9 +354,91 @@ async def wms_proxy(
     params.setdefault("transparent", "true")
     request_name = str(params.get("request", "")).lower()
     if request_name in ("getmap", "getfeatureinfo"):
-        params.setdefault("layers", image.layer_name)
+        # This proxy endpoint is image-specific; always pin layer to avoid
+        # client-side mismatches (e.g. ArcGIS using layer Title as Name).
+        params["layers"] = image.layer_name
+        if not str(params.get("styles", "")).strip():
+            params["styles"] = "raster"
+
+        # ArcGIS Online often requests overview tiles that are much larger than
+        # tiny raster extents. In those cases fully-transparent responses are
+        # common and AGOL appears to "not render". Keep normal transparent flow
+        # for regular clients/zoom levels, and force visible fallback only on
+        # ArcGIS-like or very-large overview requests that intersect the image.
+        requested_crs = str(params.get("crs") or params.get("srs") or "").strip().upper()
+        request_width = _parse_positive_int(params.get("width"))
+        request_height = _parse_positive_int(params.get("height"))
+        image_crs = str(image.crs or "").strip().upper()
+        req_bbox = _parse_bbox(params.get("bbox"))
+        if (
+            request_name == "getmap"
+            and req_bbox is not None
+            and image.bbox_minx is not None
+            and image.bbox_miny is not None
+            and image.bbox_maxx is not None
+            and image.bbox_maxy is not None
+        ):
+            raw_image_bbox = (
+                float(image.bbox_minx),
+                float(image.bbox_miny),
+                float(image.bbox_maxx),
+                float(image.bbox_maxy),
+            )
+            image_bbox = raw_image_bbox
+            if requested_crs in ("EPSG:3857", "EPSG:900913") and _is_likely_lonlat_bbox(raw_image_bbox):
+                image_bbox = _bbox_4326_to_3857(raw_image_bbox)
+            if _bbox_intersects(req_bbox, image_bbox):
+                crs_matches = bool(requested_crs and image_crs and requested_crs == image_crs)
+
+                req_area = max((req_bbox[2] - req_bbox[0]) * (req_bbox[3] - req_bbox[1]), 0.0)
+                img_area = max((image_bbox[2] - image_bbox[0]) * (image_bbox[3] - image_bbox[1]), 0.0)
+                area_ratio = (req_area / img_area) if img_area > 0 else None
+
+                user_agent = (request.headers.get("user-agent") or "").lower()
+                has_arcgis_marker = _is_arcgis_request(request) or ("arcgis" in user_agent) or ("esri" in user_agent)
+                is_large_overview_request = bool(
+                    request_width is not None
+                    and request_height is not None
+                    and (request_width >= 4096 or request_height >= 4096)
+                )
+
+                # Keep explicit ArcGIS behavior for matching CRS, and add a safe
+                # heuristic for header-less overview requests.
+                apply_visibility_fallback = (
+                    crs_matches
+                    and (
+                        has_arcgis_marker
+                        or (
+                            is_large_overview_request
+                            and area_ratio is not None
+                            and area_ratio >= 64.0
+                        )
+                    )
+                )
+
+                if apply_visibility_fallback:
+                    requested_transparent = str(params.get("transparent", "")).strip().lower() in (
+                        "true",
+                        "1",
+                        "yes",
+                    )
+                    requested_format = str(params.get("format", "")).strip().lower()
+                    wants_transparent_png = requested_transparent and ("png" in requested_format)
+
+                    # ArcGIS Online normalmente pede PNG transparente.
+                    # Se for esse caso, preservar transparência evita o "bloco branco"
+                    # e mantém a camada sobre o basemap corretamente.
+                    if wants_transparent_png:
+                        params["format"] = "image/png"
+                        params["transparent"] = "true"
+                    else:
+                        params["format"] = "image/jpeg"
+                        params["transparent"] = "false"
+                        params.setdefault("bgcolor", "0xFFFFFF")
     elif request_name == "getlegendgraphic":
-        params.setdefault("layer", image.layer_name)
+        params["layer"] = image.layer_name
+        if not str(params.get("style", "")).strip():
+            params["style"] = "raster"
     proxied = await _proxy_get(wms_endpoint, params)
     if request_name != "getcapabilities":
         return proxied

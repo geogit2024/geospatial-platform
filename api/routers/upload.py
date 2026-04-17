@@ -3,12 +3,14 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import get_settings
 from database import get_db
 from models import Image, ProcessingStatus
 from services.storage import generate_upload_url
 from services.queue import publish_upload_event
 
 router = APIRouter(prefix="/upload", tags=["upload"])
+settings = get_settings()
 
 ALLOWED_EXTENSIONS = {".tif", ".tiff", ".geotiff", ".jp2", ".ecw", ".img"}
 
@@ -61,6 +63,7 @@ async def get_signed_upload_url(
 
     image = Image(
         id=image_id,
+        tenant_id=settings.default_tenant_id,
         filename=request.filename,
         original_key=raw_key,
         status=ProcessingStatus.UPLOADING,

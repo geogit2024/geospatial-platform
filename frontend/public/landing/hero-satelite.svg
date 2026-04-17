@@ -1,0 +1,106 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="600" y1="0" x2="600" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C8D9E3"/>
+      <stop offset="1" stop-color="#D9E4D1"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="103" y1="72" x2="1097" y2="688" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#173A5A"/>
+      <stop offset="1" stop-color="#0D2236"/>
+    </linearGradient>
+    <linearGradient id="mapSurface" x1="140" y1="140" x2="770" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1E4A6C"/>
+      <stop offset="1" stop-color="#132D45"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#96D1FF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#96D1FF" stop-opacity="0.08"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#1F4E70"/>
+      <stop offset="1" stop-color="#1A3C57"/>
+    </linearGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <path d="M 36 0 L 0 0 0 36" stroke="#7EB8D0" stroke-opacity="0.16" stroke-width="1"/>
+    </pattern>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="760" rx="36" fill="url(#bg)"/>
+  <rect x="84" y="72" width="1032" height="616" rx="34" fill="url(#panel)" stroke="#2E5C80" stroke-width="4"/>
+
+  <rect x="120" y="112" width="684" height="536" rx="24" fill="url(#mapSurface)" stroke="#4D87AF" stroke-opacity="0.8"/>
+  <rect x="120" y="112" width="684" height="536" rx="24" fill="url(#grid)"/>
+
+  <path d="M176 550 C230 490 275 500 322 460 C370 418 412 427 455 380 C506 327 564 333 623 286 C671 248 714 238 760 206"
+        stroke="#66C2FF" stroke-width="4" stroke-linecap="round" stroke-dasharray="7 9" opacity="0.95"/>
+  <path d="M172 502 C243 460 315 466 386 420 C452 378 521 379 596 331 C656 293 713 274 760 240"
+        stroke="#74F0C8" stroke-width="3" stroke-linecap="round" stroke-dasharray="2 8" opacity="0.9"/>
+
+  <circle cx="176" cy="550" r="9" fill="#66C2FF" filter="url(#glow)"/>
+  <circle cx="322" cy="460" r="8" fill="#6DE7B8" filter="url(#glow)"/>
+  <circle cx="455" cy="380" r="9" fill="#66C2FF" filter="url(#glow)"/>
+  <circle cx="623" cy="286" r="8" fill="#6DE7B8" filter="url(#glow)"/>
+  <circle cx="760" cy="206" r="10" fill="#66C2FF" filter="url(#glow)"/>
+
+  <rect x="170" y="185" width="170" height="118" rx="14" fill="#305F7E" fill-opacity="0.74"/>
+  <rect x="358" y="206" width="196" height="128" rx="14" fill="#4C8C63" fill-opacity="0.65"/>
+  <rect x="578" y="180" width="174" height="112" rx="14" fill="#4B80A0" fill-opacity="0.62"/>
+  <rect x="196" y="340" width="260" height="164" rx="14" fill="#578E6D" fill-opacity="0.45"/>
+  <rect x="476" y="346" width="250" height="162" rx="14" fill="#6B8F73" fill-opacity="0.42"/>
+
+  <circle cx="650" cy="185" r="72" fill="#67C2FF" fill-opacity="0.16"/>
+  <path d="M460 125 C550 78 690 80 780 136" stroke="#8FD4FF" stroke-width="3" stroke-dasharray="8 8" opacity="0.8"/>
+  <circle cx="780" cy="136" r="6" fill="#8FD4FF"/>
+
+  <g transform="translate(818 118)">
+    <rect width="258" height="158" rx="18" fill="url(#card)" stroke="#3E7297" stroke-opacity="0.7"/>
+    <text x="18" y="34" fill="#A8CEE8" font-family="Arial, sans-serif" font-size="18" font-weight="700">TRACKING STATUS</text>
+    <text x="18" y="68" fill="#F2FBFF" font-family="Arial, sans-serif" font-size="32" font-weight="700">ONLINE</text>
+    <rect x="18" y="94" width="222" height="14" rx="7" fill="#2A5E81"/>
+    <rect x="18" y="94" width="174" height="14" rx="7" fill="#65D3A0"/>
+    <text x="18" y="134" fill="#C4E1F2" font-family="Arial, sans-serif" font-size="16">Cobertura em tempo real</text>
+  </g>
+
+  <g transform="translate(818 292)">
+    <rect width="258" height="170" rx="18" fill="url(#card)" stroke="#3E7297" stroke-opacity="0.7"/>
+    <text x="18" y="34" fill="#A8CEE8" font-family="Arial, sans-serif" font-size="18" font-weight="700">DADOS GEOESPACIAIS</text>
+    <rect x="18" y="54" width="222" height="2" fill="#315D7E"/>
+    <rect x="18" y="74" width="112" height="14" rx="7" fill="#4B86AA"/>
+    <rect x="18" y="98" width="188" height="14" rx="7" fill="#6BD4A4"/>
+    <rect x="18" y="122" width="152" height="14" rx="7" fill="#6DB4FF"/>
+    <text x="176" y="84" fill="#D8EDFA" font-family="Arial, sans-serif" font-size="12">Latencia 142ms</text>
+    <text x="212" y="108" fill="#D8EDFA" font-family="Arial, sans-serif" font-size="12">12.4 TB</text>
+    <text x="178" y="132" fill="#D8EDFA" font-family="Arial, sans-serif" font-size="12">3 cliques</text>
+  </g>
+
+  <g transform="translate(818 478)">
+    <rect width="258" height="170" rx="18" fill="url(#card)" stroke="#3E7297" stroke-opacity="0.7"/>
+    <text x="18" y="34" fill="#A8CEE8" font-family="Arial, sans-serif" font-size="18" font-weight="700">ALVOS ATIVOS</text>
+    <polyline points="20,126 58,118 96,98 134,104 172,78 210,72 238,56"
+              stroke="#73D6FF" stroke-width="3" fill="none"/>
+    <circle cx="58" cy="118" r="4" fill="#73D6FF"/>
+    <circle cx="134" cy="104" r="4" fill="#73D6FF"/>
+    <circle cx="210" cy="72" r="4" fill="#73D6FF"/>
+    <text x="18" y="156" fill="#D8EDFA" font-family="Arial, sans-serif" font-size="14">17 sensores sincronizados</text>
+  </g>
+
+  <g transform="translate(625 78) rotate(12)">
+    <rect x="-38" y="-12" width="76" height="24" rx="4" fill="#6A8EA9"/>
+    <rect x="-122" y="-16" width="72" height="32" rx="4" fill="#2D607F"/>
+    <rect x="50" y="-16" width="72" height="32" rx="4" fill="#2D607F"/>
+    <rect x="-12" y="-28" width="24" height="56" rx="4" fill="#BFD4E2"/>
+    <circle cx="0" cy="0" r="8" fill="#E7F4FC"/>
+    <circle cx="0" cy="0" r="4" fill="#77BDF0"/>
+  </g>
+
+  <path d="M635 98 L430 255" stroke="url(#beam)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M635 98 L520 310" stroke="url(#beam)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M635 98 L676 245" stroke="url(#beam)" stroke-width="3" stroke-linecap="round"/>
+</svg>

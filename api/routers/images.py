@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Literal, Optional
 import logging
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -8,7 +8,8 @@ from sqlalchemy import select
 
 from config import get_settings
 from database import get_db
-from models import Image
+from models import AssetAccessLog, Image
+from services.storage import generate_download_url
 from services.queue import publish_upload_event
 
 router = APIRouter(prefix="/images", tags=["images"])
@@ -78,6 +79,15 @@ class ImageResponse(BaseModel):
         )
 
 
+class ImageDownloadResponse(BaseModel):
+    image_id: str
+    source: Literal["raw", "processed"]
+    bucket: str
+    object_key: str
+    download_url: str
+    expires_in_seconds: int
+
+
 @router.get("/", response_model=list[ImageResponse])
 async def list_images(
     status: Optional[str] = Query(None),
@@ -101,6 +111,54 @@ async def get_image(
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
     return ImageResponse.from_orm(image)
+
+
+@router.get("/{image_id}/download-url", response_model=ImageDownloadResponse)
+async def get_image_download_url(
+    image_id: str,
+    source: Literal["raw", "processed"] = Query(default="raw"),
+    db: AsyncSession = Depends(get_db),
+) -> ImageDownloadResponse:
+    image = await db.get(Image, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    if source == "raw":
+        object_key = image.original_key
+        bucket = settings.storage_bucket_raw
+    else:
+        object_key = image.processed_key
+        bucket = settings.storage_bucket_processed
+
+    if not object_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image has no {source} object key available for download",
+        )
+
+    download_url = generate_download_url(bucket=bucket, key=object_key)
+
+    try:
+        db.add(
+            AssetAccessLog(
+                tenant_id=settings.default_tenant_id,
+                image_id=image.id,
+                event_type="download",
+            )
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        log.warning("Failed to register download access log for image %s: %s", image.id, exc)
+
+    return ImageDownloadResponse(
+        image_id=image.id,
+        source=source,
+        bucket=bucket,
+        object_key=object_key,
+        download_url=download_url,
+        expires_in_seconds=settings.signed_url_expiry_seconds,
+    )
 
 
 async def _delete_geoserver_store(store_name: str) -> None:

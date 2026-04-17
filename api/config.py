@@ -30,6 +30,32 @@ class Settings(BaseSettings):
     api_secret_key: str = "changeme"
     signed_url_expiry_seconds: int = 3600
     cors_origins: str = "http://localhost:3000,http://localhost:8080,https://geopublish-frontend-owbbo3ghkq-uc.a.run.app,https://geopublish-frontend-758336857324.us-central1.run.app"
+    cors_origin_regex: str = r"https://([a-zA-Z0-9-]+\.)*(arcgis\.com|arcgisonline\.com)"
+
+    # Metrics
+    default_tenant_id: str = "default"
+    metrics_default_window_days: int = 30
+    metrics_max_window_days: int = 365
+    metrics_top_files_limit: int = 5
+    billing_cost_source: str = "configured"  # configured | gcp_billing_export
+    billing_currency: str = "BRL"
+    cost_per_gb_month: float = 0.15
+    cost_per_process: float = 0.05
+    cost_per_download: float = 0.01
+    gcp_project_id: str = ""
+    gcp_billing_export_project: str = ""
+    gcp_billing_export_table: str = ""
+
+    # Email (SMTP)
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "GeoPublish"
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    app_public_url: str = "http://localhost:3000"
 
 
 @lru_cache

@@ -1,4 +1,4 @@
-// Use relative /api so frontend always calls the local Next.js proxy route.
+﻿// Use relative /api so frontend always calls the local Next.js proxy route.
 // Proxy target is resolved at runtime via API_URL (Cloud Run-friendly).
 const BASE = "";
 
@@ -32,6 +32,89 @@ export interface OGCServices {
   bbox: { minx: number; miny: number; maxx: number; maxy: number } | null;
 }
 
+export interface DistributionByType {
+  type: string;
+  count: number;
+  size_gb: number;
+}
+
+export interface TopFileMetric {
+  id: string;
+  filename: string;
+  size_mb: number;
+  created_at: string;
+}
+
+export interface TopAccessedMetric {
+  id: string;
+  filename: string;
+  accesses: number;
+}
+
+export interface UsageSeriesPoint {
+  date: string;
+  files_added: number;
+  added_gb: number;
+  total_gb: number;
+}
+
+export interface StorageMetrics {
+  tenant_id: string;
+  window_days: number;
+  total_files: number;
+  total_size_gb: number;
+  avg_size_mb: number;
+  growth_window_pct: number;
+  growth_30_days: number | null;
+  distribution_by_type: DistributionByType[];
+  top_files: TopFileMetric[];
+  top_accessed: TopAccessedMetric[];
+  usage_timeseries: UsageSeriesPoint[];
+}
+
+export interface CostSeriesPoint {
+  date: string;
+  value: number;
+  storage: number;
+  processing: number;
+  downloads: number;
+}
+
+export interface CostMetrics {
+  tenant_id: string;
+  window_days: number;
+  currency: string;
+  cost_per_gb: number;
+  cost_per_process: number;
+  cost_per_download: number;
+  storage_cost_month: number;
+  processing_cost: number;
+  download_cost: number;
+  estimated_total: number;
+  projection_30_days: number;
+  cost_timeseries: CostSeriesPoint[];
+}
+
+export interface CostSimulationResponse {
+  tenant_id: string;
+  currency: string;
+  current_estimated_total: number;
+  extra_storage_cost: number;
+  extra_processing_cost: number;
+  extra_download_cost: number;
+  extra_total: number;
+  new_estimated_total: number;
+}
+
+export interface ImageDownloadUrlResponse {
+  image_id: string;
+  source: "raw" | "processed";
+  bucket: string;
+  object_key: string;
+  download_url: string;
+  expires_in_seconds: number;
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -54,11 +137,43 @@ export async function getOGCServices(id: string): Promise<OGCServices> {
   return req<OGCServices>(`/api/services/${id}/ogc`);
 }
 
+export async function getImageDownloadUrl(
+  id: string,
+  source: "raw" | "processed" = "raw"
+): Promise<ImageDownloadUrlResponse> {
+  return req<ImageDownloadUrlResponse>(`/api/images/${id}/download-url?source=${source}`);
+}
+
+export async function getStorageMetrics(windowDays = 30, tenantId?: string): Promise<StorageMetrics> {
+  const query = new URLSearchParams({ window_days: String(windowDays) });
+  if (tenantId) query.set("tenant_id", tenantId);
+  return req<StorageMetrics>(`/api/metrics/storage?${query.toString()}`);
+}
+
+export async function getCostMetrics(windowDays = 30, tenantId?: string): Promise<CostMetrics> {
+  const query = new URLSearchParams({ window_days: String(windowDays) });
+  if (tenantId) query.set("tenant_id", tenantId);
+  return req<CostMetrics>(`/api/metrics/costs?${query.toString()}`);
+}
+
+export async function simulateCostMetrics(input: {
+  tenant_id?: string;
+  window_days?: number;
+  extra_gb: number;
+  extra_processes: number;
+  extra_downloads: number;
+}): Promise<CostSimulationResponse> {
+  return req<CostSimulationResponse>("/api/metrics/costs/simulate", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function requestSignedUrl(
   filename: string,
   contentType: string
 ): Promise<{ image_id: string; upload_url: string; raw_key: string }> {
-  return req(`/api/upload/signed-url`, {
+  return req("/api/upload/signed-url", {
     method: "POST",
     body: JSON.stringify({ filename, content_type: contentType }),
   });
@@ -85,7 +200,7 @@ export async function uploadFileDirect(
 }
 
 export async function confirmUpload(imageId: string): Promise<void> {
-  await req(`/api/upload/confirm`, {
+  await req("/api/upload/confirm", {
     method: "POST",
     body: JSON.stringify({ image_id: imageId }),
   });

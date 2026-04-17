@@ -25,6 +25,7 @@ class Image(Base):
     __tablename__ = "images"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False, default="default")
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     original_key: Mapped[str] = mapped_column(String(1024), nullable=True)
     processed_key: Mapped[str] = mapped_column(String(1024), nullable=True)
