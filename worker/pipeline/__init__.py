@@ -105,6 +105,15 @@ def _run(cmd: list, label: str, timeout: int = 600) -> None:
         log.debug("[%s] stderr: %s", label, r.stderr.strip()[:200])
 
 
+def _is_missing_georeference_warp_error(exc: RuntimeError) -> bool:
+    """Detect gdalwarp failure for rasters without affine transform/GCPs."""
+    message = str(exc).lower()
+    return (
+        "unable to compute a transformation between pixel/line and georeferenced coordinates" in message
+        or "there is no affine transformation and no gcps" in message
+    )
+
+
 # ─── Stage 1: Audit ───────────────────────────────────────────────────────────
 
 def audit_raster(path: str) -> dict:
@@ -196,7 +205,7 @@ def normalize_raster(
 
         # 2. Reproject to EPSG:3857
         log.info("[normalize] Reprojecting → EPSG:3857")
-        _run([
+        warp_cmd = [
             "gdalwarp",
             "-t_srs",     "EPSG:3857",
             "-r",         "bilinear",
@@ -205,7 +214,29 @@ def normalize_raster(
             "-co",        "COMPRESS=LZW",
             "-co",        "TILED=YES",
             reproj_src, step_warped,
-        ], "gdalwarp EPSG:3857")
+        ]
+        try:
+            _run(warp_cmd, "gdalwarp EPSG:3857")
+        except RuntimeError as exc:
+            if not _is_missing_georeference_warp_error(exc):
+                raise
+
+            # Some JPEG/JPG files arrive without affine transform or GCPs.
+            # Retry with explicit GDAL override to keep the pipeline flowing.
+            log.warning(
+                "[normalize] Missing affine transform/GCPs - retrying gdalwarp with SRC_METHOD=NO_GEOTRANSFORM"
+            )
+            _run([
+                "gdalwarp",
+                "-t_srs",     "EPSG:3857",
+                "-r",         "bilinear",
+                "-dstnodata", str(nodata_value),
+                "-wo",        f"NUM_THREADS={os.cpu_count() or 4}",
+                "-to",        "SRC_METHOD=NO_GEOTRANSFORM",
+                "-co",        "COMPRESS=LZW",
+                "-co",        "TILED=YES",
+                reproj_src, step_warped,
+            ], "gdalwarp EPSG:3857 (NO_GEOTRANSFORM)")
 
         # 3. Generate COG with DEFLATE + NoData
         log.info("[normalize] Generating COG (DEFLATE, 512x512 tiles)")
