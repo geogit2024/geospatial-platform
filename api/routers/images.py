@@ -1,3 +1,4 @@
+import asyncio
 from typing import Literal, Optional
 import logging
 import httpx
@@ -9,7 +10,7 @@ from sqlalchemy import select
 from config import get_settings
 from database import get_db
 from models import AssetAccessLog, Image
-from services.storage import generate_download_url
+from services.storage import delete_image_related_files, generate_download_url
 from services.queue import publish_upload_event
 
 router = APIRouter(prefix="/images", tags=["images"])
@@ -209,6 +210,26 @@ async def delete_image(image_id: str, db: AsyncSession = Depends(get_db)) -> Non
     if image.layer_name:
         store_name = f"img_{image_id.replace('-', '_')}"
         await _delete_geoserver_store(store_name)
+
+    try:
+        cleanup = await asyncio.to_thread(
+            delete_image_related_files,
+            image_id=image.id,
+            original_key=image.original_key,
+            processed_key=image.processed_key,
+        )
+        log.info(
+            "Storage cleanup completed for image %s: deleted_objects=%s prefix=%s",
+            image.id,
+            cleanup.get("deleted_objects"),
+            cleanup.get("prefix"),
+        )
+    except Exception as exc:
+        log.error("Storage cleanup failed for image %s: %s", image.id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to delete all storage files related to this image",
+        ) from exc
 
     await db.delete(image)
     await db.commit()

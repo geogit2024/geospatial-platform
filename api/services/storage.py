@@ -7,6 +7,7 @@ Locally: run `gcloud auth application-default login` once.
 """
 
 import datetime
+from typing import Any
 
 from google.cloud import storage
 from google.auth import default
@@ -68,3 +69,77 @@ def generate_download_url(bucket: str, key: str) -> str:
         access_token=credentials.token,
     )
     return url
+
+
+def _delete_object_if_exists(client: storage.Client, bucket_name: str, key: str | None) -> int:
+    normalized = (key or "").strip()
+    if not normalized:
+        return 0
+
+    blob = client.bucket(bucket_name).blob(normalized)
+    if not blob.exists():
+        return 0
+
+    blob.delete()
+    return 1
+
+
+def _delete_by_prefix(client: storage.Client, bucket_name: str, prefix: str) -> int:
+    deleted = 0
+    for blob in client.list_blobs(bucket_name, prefix=prefix):
+        blob.delete()
+        deleted += 1
+    return deleted
+
+
+def _has_prefix_objects(client: storage.Client, bucket_name: str, prefix: str) -> bool:
+    iterator = client.list_blobs(bucket_name, prefix=prefix, max_results=1)
+    return next(iter(iterator), None) is not None
+
+
+def delete_image_related_files(
+    *,
+    image_id: str,
+    original_key: str | None,
+    processed_key: str | None,
+) -> dict[str, Any]:
+    """
+    Delete all storage objects related to an image/service.
+
+    Strategy:
+    - delete explicit keys from DB (original_key / processed_key)
+    - delete every object under {image_id}/ prefix in raw and processed buckets
+    - verify no object under that prefix remains
+    """
+    normalized_id = image_id.strip()
+    if not normalized_id:
+        raise ValueError("image_id is required for storage cleanup")
+
+    prefix = f"{normalized_id}/"
+    client = get_gcs()
+    raw_bucket = settings.storage_bucket_raw
+    processed_bucket = settings.storage_bucket_processed
+
+    deleted_objects = 0
+    deleted_objects += _delete_object_if_exists(client, raw_bucket, original_key)
+    deleted_objects += _delete_object_if_exists(client, processed_bucket, processed_key)
+
+    deleted_objects += _delete_by_prefix(client, raw_bucket, prefix)
+    deleted_objects += _delete_by_prefix(client, processed_bucket, prefix)
+
+    raw_remaining = _has_prefix_objects(client, raw_bucket, prefix)
+    processed_remaining = _has_prefix_objects(client, processed_bucket, prefix)
+
+    if raw_remaining or processed_remaining:
+        raise RuntimeError(
+            f"Incomplete storage cleanup for image_id={normalized_id} "
+            f"(raw_remaining={raw_remaining}, processed_remaining={processed_remaining})"
+        )
+
+    return {
+        "image_id": normalized_id,
+        "prefix": prefix,
+        "deleted_objects": deleted_objects,
+        "raw_bucket": raw_bucket,
+        "processed_bucket": processed_bucket,
+    }
