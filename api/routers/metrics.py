@@ -65,6 +65,9 @@ class CostSeriesItem(BaseModel):
 class CostMetricsResponse(BaseModel):
     tenant_id: str
     window_days: int
+    cost_source: str
+    cost_source_is_real: bool
+    cost_source_table: Optional[str] = None
     currency: str
     cost_per_gb: float
     cost_per_process: float

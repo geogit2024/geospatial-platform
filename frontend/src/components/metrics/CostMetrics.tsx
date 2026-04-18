@@ -31,6 +31,7 @@ export default function CostMetricsSection() {
     async function load() {
       setLoading(true);
       setError(null);
+      setData(null);
       try {
         const response = await getCostMetrics(windowDays);
         if (active) {
@@ -39,7 +40,10 @@ export default function CostMetricsSection() {
           setSimulationError(null);
         }
       } catch (err: unknown) {
-        if (active) setError(err instanceof Error ? err.message : "Falha ao carregar metricas de custo.");
+        if (active) {
+          setData(null);
+          setError(err instanceof Error ? err.message : "Falha ao carregar metricas de custo.");
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -81,7 +85,18 @@ export default function CostMetricsSection() {
   return (
     <section className="rounded-2xl border border-[#24344b] bg-[#0e1829]/95 p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-base font-bold text-[#e2ecff]">Custos e Cobranca</h2>
+        <div>
+          <h2 className="text-base font-bold text-[#e2ecff]">Custos e Cobranca</h2>
+          {data && (
+            <p className={`mt-1 text-[11px] ${data.cost_source_is_real ? "text-emerald-300" : "text-amber-300"}`}>
+              Fonte:{" "}
+              {data.cost_source_is_real
+                ? "GCP Billing Export (BigQuery)"
+                : "Configurada (nao-real)"}{" "}
+              {data.cost_source_table ? `- ${data.cost_source_table}` : ""}
+            </p>
+          )}
+        </div>
         <div className="inline-flex rounded-lg border border-[#2a3f58] bg-[#0f1e31] p-1 text-xs">
           {[7, 30].map((days) => (
             <button

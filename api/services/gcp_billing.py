@@ -11,6 +11,9 @@ from config import get_settings
 settings = get_settings()
 
 _TABLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+\.[A-Za-z0-9_]+\.[A-Za-z0-9_-]+$")
+_TABLE_REF_RE = re.compile(
+    r"^(?P<project>[A-Za-z0-9_-]+)\.(?P<dataset>[A-Za-z0-9_]+)(?:\.(?P<table>[A-Za-z0-9_*-]+))?$"
+)
 
 
 class BillingExportConfigError(RuntimeError):
@@ -29,6 +32,27 @@ def _validate_table_id(table_id: str) -> str:
             "GCP_BILLING_EXPORT_TABLE invalido. Use projeto.dataset.tabela."
         )
     return normalized
+
+
+def _parse_table_ref(table_ref: str) -> tuple[str, str, str | None]:
+    normalized = table_ref.strip()
+    if not normalized:
+        raise BillingExportConfigError(
+            "GCP_BILLING_EXPORT_TABLE nao configurado. "
+            "Informe no formato projeto.dataset.tabela, projeto.dataset.* ou projeto.dataset."
+        )
+
+    match = _TABLE_REF_RE.match(normalized)
+    if not match:
+        raise BillingExportConfigError(
+            "GCP_BILLING_EXPORT_TABLE invalido. "
+            "Use projeto.dataset.tabela, projeto.dataset.* ou projeto.dataset."
+        )
+
+    project = str(match.group("project"))
+    dataset = str(match.group("dataset"))
+    table = match.group("table")
+    return project, dataset, table
 
 
 def _to_float(value: Any) -> float:
@@ -115,6 +139,59 @@ def _run_daily_cost_query(*, table_id: str, start: date, end: date, project_id: 
     return [dict(row.items()) for row in rows]
 
 
+def _resolve_table_id(table_ref: str) -> str:
+    try:
+        from google.cloud import bigquery
+    except Exception as exc:  # pragma: no cover - dependency/runtime variation
+        raise BillingExportConfigError(
+            "google-cloud-bigquery nao disponivel. Instale a dependencia no servico da API."
+        ) from exc
+
+    project, dataset, table = _parse_table_ref(table_ref)
+
+    # Exact table id provided
+    if table and "*" not in table:
+        table_id = f"{project}.{dataset}.{table}"
+        return _validate_table_id(table_id)
+
+    table_pattern = "gcp_billing_export%" if not table else table.replace("*", "%")
+
+    client_kwargs: dict[str, Any] = {}
+    if settings.gcp_billing_export_project.strip():
+        client_kwargs["project"] = settings.gcp_billing_export_project.strip()
+
+    client = bigquery.Client(**client_kwargs)
+    query = f"""
+    SELECT table_name
+    FROM `{project}.{dataset}.INFORMATION_SCHEMA.TABLES`
+    WHERE table_name LIKE @table_pattern
+    ORDER BY creation_time DESC
+    LIMIT 1
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("table_pattern", "STRING", table_pattern),
+        ]
+    )
+
+    try:
+        rows = list(client.query(query, job_config=job_config).result())
+    except Exception as exc:
+        raise BillingExportConfigError(
+            "Falha ao listar tabelas de export de billing no BigQuery. "
+            "Verifique dataset/permissoes de acesso."
+        ) from exc
+
+    if not rows:
+        raise BillingExportConfigError(
+            f"Nenhuma tabela de export de billing encontrada em {project}.{dataset} "
+            f"com padrao '{table_pattern}'."
+        )
+
+    table_name = str(rows[0]["table_name"])
+    return _validate_table_id(f"{project}.{dataset}.{table_name}")
+
+
 def _build_timeseries(
     rows: list[dict[str, Any]],
     *,
@@ -159,7 +236,7 @@ async def get_billing_cost_metrics_from_export(
     window_days: int,
     project_id: str,
 ) -> dict[str, Any]:
-    table_id = _validate_table_id(settings.gcp_billing_export_table)
+    table_id = await asyncio.to_thread(_resolve_table_id, settings.gcp_billing_export_table)
 
     today = date.today()
     window_start = today - timedelta(days=max(window_days - 1, 0))
@@ -205,6 +282,7 @@ async def get_billing_cost_metrics_from_export(
 
     return {
         "currency": currency or settings.billing_currency,
+        "table_id": table_id,
         "window_total": round(window_total, 2),
         "window_storage": round(window_storage, 2),
         "window_processing": round(window_processing, 2),

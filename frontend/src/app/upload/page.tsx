@@ -8,8 +8,8 @@ import { registerImageOwner } from "@/lib/auth";
 
 type Step = "idle" | "signing" | "uploading" | "confirming" | "done" | "error";
 
-const ACCEPTED = [".tif", ".tiff", ".geotiff", ".jp2", ".ecw", ".img"];
-const ACCEPT_MIME = "image/tiff,.tif,.tiff,.geotiff,.jp2,.ecw,.img";
+const ACCEPTED = [".tif", ".tiff", ".geotiff", ".jp2", ".ecw", ".img", ".jpg", ".jpeg"];
+const ACCEPT_MIME = "image/tiff,image/jpeg,.tif,.tiff,.geotiff,.jp2,.ecw,.img,.jpg,.jpeg";
 
 export default function UploadPage() {
   const router = useRouter();
@@ -80,7 +80,8 @@ export default function UploadPage() {
     <div className="max-w-2xl mx-auto px-6 py-10 text-[#dbe8fb]">
       <h1 className="text-2xl font-bold mb-1 text-[#e2ecff]">Upload de Imagem</h1>
       <p className="text-[#9fb3cf] mb-8">
-        Formatos suportados: GeoTIFF, JP2, ECW, IMG. Upload direto para o storage - a API nao transita os bytes.
+        Formatos suportados: GeoTIFF, JP2, ECW, IMG, JPG/JPEG. Upload direto para o storage - a API nao transita os
+        bytes.
       </p>
 
       <div

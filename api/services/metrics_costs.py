@@ -110,12 +110,15 @@ async def get_cost_metrics(
 
     process_count, download_count = await _window_counts(db, tenant_id, start)
     source = settings.billing_cost_source.strip().lower()
+    source_is_real = source == "gcp_billing_export"
+    source_table: str | None = None
 
     if source == "gcp_billing_export":
         billing = await get_billing_cost_metrics_from_export(
             window_days=window_days,
             project_id=settings.gcp_project_id.strip(),
         )
+        source_table = str(billing.get("table_id") or "")
 
         storage_cost_month = float(billing["month_storage"])
         processing_cost = float(billing["window_processing"])
@@ -167,6 +170,9 @@ async def get_cost_metrics(
     return {
         "tenant_id": tenant_id,
         "window_days": window_days,
+        "cost_source": source,
+        "cost_source_is_real": source_is_real,
+        "cost_source_table": source_table,
         "currency": currency,
         "cost_per_gb": round(cost_per_gb_month, 4),
         "cost_per_process": round(cost_per_process, 4),

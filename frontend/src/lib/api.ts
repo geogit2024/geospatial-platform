@@ -83,6 +83,9 @@ export interface CostSeriesPoint {
 export interface CostMetrics {
   tenant_id: string;
   window_days: number;
+  cost_source: string;
+  cost_source_is_real: boolean;
+  cost_source_table?: string | null;
   currency: string;
   cost_per_gb: number;
   cost_per_process: number;
@@ -120,7 +123,16 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  if (!r.ok) {
+    let detail = "";
+    try {
+      const payload = await r.json();
+      detail = typeof payload?.detail === "string" ? payload.detail : "";
+    } catch {
+      detail = "";
+    }
+    throw new Error(detail ? `${r.status} ${detail}` : `${r.status} ${r.statusText}`);
+  }
   return r.json();
 }
 

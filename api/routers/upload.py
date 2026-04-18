@@ -12,7 +12,7 @@ from services.queue import publish_upload_event
 router = APIRouter(prefix="/upload", tags=["upload"])
 settings = get_settings()
 
-ALLOWED_EXTENSIONS = {".tif", ".tiff", ".geotiff", ".jp2", ".ecw", ".img"}
+ALLOWED_EXTENSIONS = {".tif", ".tiff", ".geotiff", ".jp2", ".ecw", ".img", ".jpg", ".jpeg"}
 
 # Normalize browser-supplied content-type to a predictable value per extension.
 # GCS signed PUT URLs are scoped to the content-type used during signing — mismatches
@@ -24,6 +24,8 @@ _CONTENT_TYPE_MAP = {
     ".jp2":     "image/jp2",
     ".ecw":     "image/x-ecw",
     ".img":     "application/octet-stream",
+    ".jpg":     "image/jpeg",
+    ".jpeg":    "image/jpeg",
 }
 
 
