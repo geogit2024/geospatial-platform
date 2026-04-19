@@ -274,6 +274,7 @@ async def validate_wms_layer(
     layer_name: str,
     native_bbox: dict,
     crs: str = "EPSG:3857",
+    workspace: Optional[str] = None,
 ) -> bool:
     """
     Make a test WMS 1.3.0 GetMap request against the internal GeoServer URL.
@@ -283,7 +284,9 @@ async def validate_wms_layer(
     depending on the public HTTPS URL being reachable from inside the container.
     """
     gs_internal = settings.geoserver_url.rstrip("/")
-    ws = settings.geoserver_workspace
+    ws = (workspace or settings.geoserver_workspace or "").strip()
+    if not ws:
+        ws = settings.geoserver_workspace
 
     # WMS 1.3.0 BBOX for EPSG:3857 is: minx,miny,maxx,maxy (easting/northing order)
     bbox_str = (
@@ -597,7 +600,11 @@ async def publish_processed_image(
             validated = False
             for attempt in range(1, 4):
                 ok = await validate_wms_layer(
-                    image_id, result["layer_name"], native_bbox, native_crs
+                    image_id,
+                    result["layer_name"],
+                    native_bbox,
+                    native_crs,
+                    workspace=published_workspace,
                 )
                 if ok:
                     validated = True
