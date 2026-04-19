@@ -64,7 +64,7 @@ const STATUS_STEP_INDEX: Record<ImageStatus, number | null> = {
 export default function DashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<DashboardTab>("layers");
-  const [layersScope, setLayersScope] = useState<LayersScopeTab>("mine");
+  const [layersScope, setLayersScope] = useState<LayersScopeTab>("organization");
   const [layerStatusFilter, setLayerStatusFilter] = useState<LayerStatusFilter>("all");
   const [layerQuery, setLayerQuery] = useState("");
   const [images, setImages] = useState<ImageRecord[]>([]);
@@ -181,6 +181,24 @@ export default function DashboardPage() {
   };
 
   const hasActive = visibleImages.some((img) => STATUS_IS_ACTIVE[img.status]);
+  const dashboardSummary = useMemo(() => {
+    if (activeTab === "metrics") {
+      return `${images.length} ${images.length !== 1 ? "imagens" : "imagem"} registrada${
+        images.length !== 1 ? "s" : ""
+      } na organizacao`;
+    }
+
+    const base = `${visibleImages.length} ${visibleImages.length !== 1 ? "imagens" : "imagem"} registrada${
+      visibleImages.length !== 1 ? "s" : ""
+    }`;
+    if (layersScope === "mine") {
+      return `${base} de ${images.length} na organizacao`;
+    }
+    if (layerStatusFilter !== "all" || layerQuery.trim()) {
+      return `${base} (filtro aplicado)`;
+    }
+    return `${base} na organizacao`;
+  }, [activeTab, images.length, layerQuery, layerStatusFilter, layersScope, visibleImages.length]);
 
   return (
     <div className="h-full flex flex-col bg-[#0b1220]/70">
@@ -189,11 +207,7 @@ export default function DashboardPage() {
           <div>
             <h1 className="text-2xl font-bold text-[#e2ecff]">Dashboard</h1>
             <p className="text-sm text-[#90a8c6] mt-0.5">
-              {visibleImages.length} {visibleImages.length !== 1 ? "imagens" : "imagem"} registrada
-              {visibleImages.length !== 1 ? "s" : ""}
-              {layersScope === "mine" && (
-                <span className="ml-1 text-[#7f97b5]">de {images.length} na organizacao</span>
-              )}
+              {dashboardSummary}
               {hasActive && <span className="ml-2 text-[#38bdf8] animate-pulse">* atualizando...</span>}
             </p>
           </div>
