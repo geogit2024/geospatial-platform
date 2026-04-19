@@ -18,3 +18,8 @@ def test_upload_router_content_type_mapping_for_vectors() -> None:
     assert _CONTENT_TYPE_MAP[".kml"] == "application/vnd.google-earth.kml+xml"
     assert _CONTENT_TYPE_MAP[".geojson"] == "application/geo+json"
     assert _CONTENT_TYPE_MAP[".json"] == "application/geo+json"
+
+
+def test_upload_router_does_not_allow_ecw_without_driver() -> None:
+    assert ".ecw" not in ALLOWED_EXTENSIONS
+    assert ".ecw" not in _CONTENT_TYPE_MAP

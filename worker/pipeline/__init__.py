@@ -58,7 +58,13 @@ def transform_bbox_to_wgs84(bbox: dict, src_crs: str = "EPSG:3857") -> dict:
 def _gdalinfo(path: str) -> dict:
     r = subprocess.run(["gdalinfo", "-json", path], capture_output=True, text=True)
     if r.returncode != 0:
-        raise RuntimeError(f"gdalinfo failed: {r.stderr.strip()[:300]}")
+        err = r.stderr.strip()
+        if path.lower().endswith(".ecw") and "not recognized as a supported file format" in err.lower():
+            raise RuntimeError(
+                "Formato ECW nao suportado neste ambiente de producao "
+                "(driver GDAL ECW ausente). Converta para GeoTIFF (.tif) ou JP2."
+            )
+        raise RuntimeError(f"gdalinfo failed: {err[:300]}")
     return json.loads(r.stdout)
 
 

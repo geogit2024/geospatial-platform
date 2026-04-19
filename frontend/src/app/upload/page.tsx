@@ -13,7 +13,6 @@ const ACCEPTED = [
   ".tiff",
   ".geotiff",
   ".jp2",
-  ".ecw",
   ".img",
   ".jpg",
   ".jpeg",
@@ -23,7 +22,7 @@ const ACCEPTED = [
   ".json",
 ];
 const ACCEPT_MIME =
-  "image/tiff,image/jpeg,application/zip,application/vnd.google-earth.kml+xml,application/geo+json,.tif,.tiff,.geotiff,.jp2,.ecw,.img,.jpg,.jpeg,.zip,.kml,.geojson,.json";
+  "image/tiff,image/jpeg,application/zip,application/vnd.google-earth.kml+xml,application/geo+json,.tif,.tiff,.geotiff,.jp2,.img,.jpg,.jpeg,.zip,.kml,.geojson,.json";
 
 export default function UploadPage() {
   const router = useRouter();
@@ -98,7 +97,7 @@ export default function UploadPage() {
     <div className="max-w-2xl mx-auto px-6 py-10 text-[#dbe8fb]">
       <h1 className="text-2xl font-bold mb-1 text-[#e2ecff]">Upload de Imagem</h1>
       <p className="text-[#9fb3cf] mb-8">
-        Formatos suportados: GeoTIFF, JP2, ECW, IMG, JPG/JPEG, SHP (.zip), KML e GeoJSON. Upload direto para o
+        Formatos suportados: GeoTIFF, JP2, IMG, JPG/JPEG, SHP (.zip), KML e GeoJSON. Upload direto para o
         storage - a API nao transita os bytes.
       </p>
 

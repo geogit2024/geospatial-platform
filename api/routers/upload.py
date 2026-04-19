@@ -17,7 +17,6 @@ ALLOWED_EXTENSIONS = {
     ".tiff",
     ".geotiff",
     ".jp2",
-    ".ecw",
     ".img",
     ".jpg",
     ".jpeg",
@@ -35,7 +34,6 @@ _CONTENT_TYPE_MAP = {
     ".tiff":    "image/tiff",
     ".geotiff": "image/tiff",
     ".jp2":     "image/jp2",
-    ".ecw":     "image/x-ecw",
     ".img":     "application/octet-stream",
     ".jpg":     "image/jpeg",
     ".jpeg":    "image/jpeg",
@@ -70,6 +68,14 @@ async def get_signed_upload_url(
     db: AsyncSession = Depends(get_db),
 ) -> UploadResponse:
     ext = "." + request.filename.rsplit(".", 1)[-1].lower() if "." in request.filename else ""
+    if ext == ".ecw":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Formato '.ecw' indisponivel neste ambiente de producao "
+                "(driver GDAL ECW ausente). Converta para GeoTIFF (.tif) ou JP2."
+            ),
+        )
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
