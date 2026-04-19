@@ -19,7 +19,7 @@ function DistributionDonut({ data }: { data: DistributionByType[] }) {
   }
 
   const total = data.reduce((acc, item) => acc + item.count, 0) || 1;
-  const palette = ["#38bdf8", "#60a5fa", "#34d399", "#f59e0b", "#a78bfa"];
+  const palette = ["#00E5FF", "#FF4D6D", "#7C4DFF", "#FFB300", "#00E676", "#FF6D00"];
   let cursor = 0;
 
   const segments = data.map((item, index) => {

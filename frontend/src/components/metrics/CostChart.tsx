@@ -86,6 +86,7 @@ export default function CostChart({ data, title = "Evolucao de custo", currency 
   const chartHeight = height - padding.top - padding.bottom;
   const yTicks = 4;
   const xStride = Math.max(1, Math.ceil(data.length / 6));
+  const xGridStride = Math.max(1, Math.floor(data.length / 8));
 
   return (
     <div className="rounded-xl border border-[#2a3f58] bg-[#101b2c] p-4 shadow-sm">
@@ -135,6 +136,19 @@ export default function CostChart({ data, title = "Evolucao de custo", currency 
               </g>
             );
           })}
+          {bars
+            .filter((_, index) => index % xGridStride === 0 || index === data.length - 1)
+            .map((bar, index) => (
+              <line
+                key={`x-grid-${index}`}
+                x1={bar.x + bar.w / 2}
+                y1={padding.top}
+                x2={bar.x + bar.w / 2}
+                y2={padding.top + chartHeight}
+                stroke="#223850"
+                strokeDasharray="3 6"
+              />
+            ))}
 
           <line
             x1={padding.left}
@@ -147,7 +161,7 @@ export default function CostChart({ data, title = "Evolucao de custo", currency 
           {bars.map((bar, index) => (
             <g key={index}>
               {bar.storageH > 0 && (
-                <rect x={bar.x} y={bar.storageY} width={bar.w} height={bar.storageH} rx="2" fill="#38bdf8">
+                <rect x={bar.x} y={bar.storageY} width={bar.w} height={bar.storageH} rx="2" fill="#00E5FF">
                   <title>
                     {`${formatDateLabel(data[index].date)} | Storage: ${formatCurrency(data[index].storage, currency)}`}
                   </title>
@@ -160,7 +174,7 @@ export default function CostChart({ data, title = "Evolucao de custo", currency 
                   width={bar.w}
                   height={bar.processingH}
                   rx="2"
-                  fill="#34d399"
+                  fill="#00E676"
                 >
                   <title>
                     {`${formatDateLabel(data[index].date)} | Processamento: ${formatCurrency(data[index].processing, currency)}`}
@@ -174,7 +188,7 @@ export default function CostChart({ data, title = "Evolucao de custo", currency 
                   width={bar.w}
                   height={bar.downloadsH}
                   rx="2"
-                  fill="#a78bfa"
+                  fill="#FF4D6D"
                 >
                   <title>
                     {`${formatDateLabel(data[index].date)} | Downloads: ${formatCurrency(data[index].downloads, currency)}`}
@@ -207,15 +221,15 @@ export default function CostChart({ data, title = "Evolucao de custo", currency 
       {data.length > 0 && (
         <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-[#9fb3cf]">
           <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-[#38bdf8]" />
+            <span className="h-2.5 w-2.5 rounded-sm bg-[#00E5FF]" />
             Storage
           </span>
           <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-[#34d399]" />
+            <span className="h-2.5 w-2.5 rounded-sm bg-[#00E676]" />
             Processamento
           </span>
           <span className="inline-flex items-center gap-1.5">
-            <span className="h-2.5 w-2.5 rounded-sm bg-[#a78bfa]" />
+            <span className="h-2.5 w-2.5 rounded-sm bg-[#FF4D6D]" />
             Downloads
           </span>
         </div>
