@@ -7,6 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     python3-dev \
     curl \
+    ca-certificates \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 worker
 
@@ -19,8 +21,11 @@ RUN pip3 install --no-cache-dir \
     "google-auth==2.29.0" \
     "httpx==0.27.0" \
     "sqlalchemy[asyncio]==2.0.30" \
+    "geoalchemy2==0.15.1" \
+    "psycopg2-binary==2.9.9" \
     "asyncpg==0.29.0" \
-    "pydantic-settings==2.2.1"
+    "pydantic-settings==2.2.1" \
+    "geopandas==1.0.1"
 
 COPY --chown=worker:worker . .
 
