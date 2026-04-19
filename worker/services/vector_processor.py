@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.engine import Engine
 
 from config import get_settings
@@ -71,6 +72,47 @@ def _to_sync_database_url(database_url: str) -> str:
 
 def _sync_engine() -> Engine:
     return create_engine(_to_sync_database_url(settings.database_url), pool_pre_ping=True, future=True)
+
+
+def _build_search_path(target_schema: str, geometry_schema: str | None) -> str:
+    ordered = [target_schema, geometry_schema or "", "public"]
+    unique: list[str] = []
+    for item in ordered:
+        token = (item or "").strip()
+        if not token:
+            continue
+        if token not in unique:
+            unique.append(token)
+    return ", ".join(f'"{token}"' for token in unique)
+
+
+def _ensure_postgis_ready(conn, target_schema: str) -> None:
+    conn.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{target_schema}"'))
+
+    try:
+        conn.execute(text("SELECT postgis_full_version()"))
+    except DBAPIError:
+        # Attempt self-healing for environments where extension is not pre-created.
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+
+    row = conn.execute(
+        text(
+            """
+            SELECT n.nspname
+            FROM pg_type t
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE t.typname = 'geometry'
+            ORDER BY CASE WHEN n.nspname = 'public' THEN 0 ELSE 1 END
+            LIMIT 1
+            """
+        )
+    ).first()
+    geometry_schema = row[0] if row else None
+    if not geometry_schema:
+        raise RuntimeError("PostGIS geometry type not found after extension check")
+
+    search_path = _build_search_path(target_schema, geometry_schema)
+    conn.execute(text(f"SET search_path TO {search_path}"))
 
 
 def _normalize_identifier(name: str, used: set[str], *, default_prefix: str = "field") -> str:
@@ -246,14 +288,15 @@ def salvar_postgis(gdf, table_name: str) -> None:
     _validate_table_name(index_name)
 
     try:
-        gdf.to_postgis(
-            name=table_name,
-            con=engine,
-            schema=schema,
-            if_exists="replace",
-            index=False,
-        )
         with engine.begin() as conn:
+            _ensure_postgis_ready(conn, schema)
+            gdf.to_postgis(
+                name=table_name,
+                con=conn,
+                schema=schema,
+                if_exists="replace",
+                index=False,
+            )
             conn.execute(
                 text(
                     f'CREATE INDEX IF NOT EXISTS "{index_name}" '

@@ -29,6 +29,7 @@ else:
 build_postgis_table_name = vector_processor.build_postgis_table_name
 detect_vector_type = vector_processor.detect_vector_type
 _to_sync_database_url = vector_processor._to_sync_database_url
+_build_search_path = vector_processor._build_search_path
 
 
 def test_detect_vector_type_by_extension() -> None:
@@ -65,3 +66,11 @@ def test_sync_database_url_keeps_explicit_sslmode_and_drops_ssl_duplicate() -> N
     assert "sslmode=verify-full" in converted
     assert "application_name=worker" in converted
     assert "ssl=require" not in converted
+
+
+def test_build_search_path_deduplicates_and_prioritizes_target_schema() -> None:
+    assert _build_search_path("public", "public") == '"public"'
+    assert (
+        _build_search_path("tenant_data", "extensions")
+        == '"tenant_data", "extensions", "public"'
+    )
