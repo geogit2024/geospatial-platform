@@ -12,7 +12,20 @@ from services.queue import publish_upload_event
 router = APIRouter(prefix="/upload", tags=["upload"])
 settings = get_settings()
 
-ALLOWED_EXTENSIONS = {".tif", ".tiff", ".geotiff", ".jp2", ".ecw", ".img", ".jpg", ".jpeg"}
+ALLOWED_EXTENSIONS = {
+    ".tif",
+    ".tiff",
+    ".geotiff",
+    ".jp2",
+    ".ecw",
+    ".img",
+    ".jpg",
+    ".jpeg",
+    ".zip",
+    ".kml",
+    ".geojson",
+    ".json",
+}
 
 # Normalize browser-supplied content-type to a predictable value per extension.
 # GCS signed PUT URLs are scoped to the content-type used during signing — mismatches
@@ -26,12 +39,17 @@ _CONTENT_TYPE_MAP = {
     ".img":     "application/octet-stream",
     ".jpg":     "image/jpeg",
     ".jpeg":    "image/jpeg",
+    ".zip":     "application/zip",
+    ".kml":     "application/vnd.google-earth.kml+xml",
+    ".geojson": "application/geo+json",
+    ".json":    "application/geo+json",
 }
 
 
 class UploadRequest(BaseModel):
     filename: str
     content_type: str = "image/tiff"
+    size_bytes: int | None = None
 
 
 class UploadResponse(BaseModel):
@@ -56,6 +74,16 @@ async def get_signed_upload_url(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"File type '{ext}' not supported. Allowed: {ALLOWED_EXTENSIONS}",
         )
+    if request.size_bytes is not None:
+        max_size = max(int(settings.upload_max_size_mb), 1) * 1024 * 1024
+        if request.size_bytes > max_size:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=(
+                    f"File too large ({request.size_bytes} bytes). "
+                    f"Max allowed is {settings.upload_max_size_mb} MB."
+                ),
+            )
 
     # Normalize content-type — browser may send "application/octet-stream" for .tif
     content_type = _CONTENT_TYPE_MAP.get(ext, request.content_type or "image/tiff")

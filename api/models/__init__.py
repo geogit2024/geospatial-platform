@@ -7,6 +7,7 @@ from .plan_feature import PlanFeature
 from .tenant_subscription import TenantSubscription
 from .tenant_usage_daily import TenantUsageDaily
 from .subscription_event import SubscriptionEvent
+from .layer_metadata import LayerMetadata
 
 __all__ = [
     "Image",
@@ -20,4 +21,5 @@ __all__ = [
     "TenantSubscription",
     "TenantUsageDaily",
     "SubscriptionEvent",
+    "LayerMetadata",
 ]

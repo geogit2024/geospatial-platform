@@ -30,21 +30,42 @@ async def init_db() -> None:
 async def _apply_schema_compatibility_updates(conn) -> None:
     # Backfill support for installs where `images` table already exists without tenant_id.
     if conn.dialect.name == "postgresql":
-        await conn.execute(
-            text(
-                """
-                ALTER TABLE images
-                ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(64) NOT NULL DEFAULT 'default';
-                """
-            )
-        )
-        await conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS ix_images_tenant_id ON images (tenant_id);
-                """
-            )
-        )
+        statements = [
+            """
+            ALTER TABLE images
+            ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(64) NOT NULL DEFAULT 'default';
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_images_tenant_id ON images (tenant_id);
+            """,
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS wfs_url TEXT;",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS asset_kind VARCHAR(32);",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS source_format VARCHAR(64);",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS geometry_type VARCHAR(64);",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS workspace VARCHAR(128);",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS datastore VARCHAR(128);",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS postgis_table VARCHAR(128);",
+            """
+            CREATE TABLE IF NOT EXISTS layers_metadata (
+                id VARCHAR(36) PRIMARY KEY,
+                image_id VARCHAR(36) NOT NULL UNIQUE,
+                nome VARCHAR(512) NOT NULL,
+                tipo VARCHAR(64) NOT NULL,
+                geometry_type VARCHAR(64),
+                tabela_postgis VARCHAR(128),
+                workspace VARCHAR(128),
+                datastore VARCHAR(128),
+                wms_url TEXT,
+                wfs_url TEXT,
+                bbox TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS ix_layers_metadata_image_id ON layers_metadata (image_id);",
+        ]
+        for statement in statements:
+            await conn.execute(text(statement))
 
 
 async def get_db():

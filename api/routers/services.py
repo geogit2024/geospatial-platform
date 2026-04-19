@@ -39,6 +39,7 @@ def _public_ogc_urls(request: Request, image_id: str) -> dict[str, str]:
     base = _public_api_base(request)
     return {
         "wms": f"{base}/api/services/{image_id}/wms-proxy",
+        "wfs": f"{base}/api/services/{image_id}/wfs-proxy",
         "wmts": f"{base}/api/services/{image_id}/wmts-proxy",
         "wcs": f"{base}/api/services/{image_id}/wcs-proxy",
     }
@@ -289,6 +290,7 @@ async def get_ogc_services(
     image = await _get_published_image(image_id, db)
     # WMS must be image-specific so clients (ArcGIS) see only this layer.
     wms = _public_ogc_urls(request, image.id)["wms"]
+    wfs = _public_ogc_urls(request, image.id)["wfs"]
     wmts = _public_geoserver_service_url(image.wmts_url, "gwc/service/wmts")
     wcs = _public_geoserver_service_url(
         image.wcs_url, f"{settings.geoserver_workspace}/wcs"
@@ -305,6 +307,14 @@ async def get_ogc_services(
                     f"{wms}?service=WMS&version=1.3.0&request=GetMap"
                     f"&layers={image.layer_name}&bbox=-180,-90,180,90"
                     f"&width=800&height=400&crs=EPSG:4326&format=image/png"
+                ),
+            },
+            "wfs": {
+                "url": wfs,
+                "getcapabilities": f"{wfs}?service=WFS&version=2.0.0&request=GetCapabilities",
+                "getfeature_example": (
+                    f"{wfs}?service=WFS&version=2.0.0&request=GetFeature"
+                    f"&typenames={image.layer_name}&outputFormat=application/json"
                 ),
             },
             "wmts": {
@@ -357,7 +367,8 @@ async def wms_proxy(
         # This proxy endpoint is image-specific; always pin layer to avoid
         # client-side mismatches (e.g. ArcGIS using layer Title as Name).
         params["layers"] = image.layer_name
-        if not str(params.get("styles", "")).strip():
+        is_vector = str(image.asset_kind or "").lower() == "vector"
+        if not is_vector and not str(params.get("styles", "")).strip():
             params["styles"] = "raster"
 
         # ArcGIS Online often requests overview tiles that are much larger than
@@ -437,7 +448,8 @@ async def wms_proxy(
                         params.setdefault("bgcolor", "0xFFFFFF")
     elif request_name == "getlegendgraphic":
         params["layer"] = image.layer_name
-        if not str(params.get("style", "")).strip():
+        is_vector = str(image.asset_kind or "").lower() == "vector"
+        if not is_vector and not str(params.get("style", "")).strip():
             params["style"] = "raster"
     proxied = await _proxy_get(wms_endpoint, params)
     if request_name != "getcapabilities":
@@ -472,6 +484,25 @@ async def wmts_proxy(
     params = dict(request.query_params)
     params.setdefault("REQUEST", "GetCapabilities")
     return await _proxy_get(wmts_endpoint, params)
+
+
+@router.get("/{image_id}/wfs-proxy")
+async def wfs_proxy(
+    image_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    image = await _get_published_image(image_id, db)
+    workspace = image.workspace or settings.geoserver_workspace
+    wfs_endpoint = f"{settings.geoserver_url.rstrip('/')}/{workspace}/wfs"
+    params = {k.lower(): v for k, v in request.query_params.items()}
+    params.setdefault("service", "WFS")
+    params.setdefault("version", "2.0.0")
+    params.setdefault("request", "GetCapabilities")
+    request_name = str(params.get("request", "")).lower()
+    if request_name == "getfeature":
+        params.setdefault("typenames", image.layer_name)
+    return await _proxy_get(wfs_endpoint, params)
 
 
 @router.get("/{image_id}/wcs-proxy")

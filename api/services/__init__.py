@@ -1,6 +1,7 @@
 from .storage import generate_upload_url, generate_download_url, ensure_buckets
 from .queue import publish_upload_event, publish_processed_event, get_redis
 from .geoserver import get_geoserver_client
+from .geoserver_service import GeoServerService
 from .metrics_storage import get_storage_metrics
 from .metrics_costs import get_cost_metrics, simulate_costs
 from .plan_seeder import seed_default_plans, ensure_default_subscription
@@ -13,6 +14,7 @@ __all__ = [
     "publish_processed_event",
     "get_redis",
     "get_geoserver_client",
+    "GeoServerService",
     "get_storage_metrics",
     "get_cost_metrics",
     "simulate_costs",

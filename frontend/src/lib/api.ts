@@ -14,8 +14,15 @@ export interface ImageRecord {
   bbox: { minx: number; miny: number; maxx: number; maxy: number } | null;
   layer_name: string | null;
   wms_url: string | null;
+  wfs_url: string | null;
   wmts_url: string | null;
   wcs_url: string | null;
+  asset_kind?: string | null;
+  source_format?: string | null;
+  geometry_type?: string | null;
+  workspace?: string | null;
+  datastore?: string | null;
+  postgis_table?: string | null;
   error_message: string | null;
   created_at: string;
   updated_at: string;
@@ -26,6 +33,7 @@ export interface OGCServices {
   layer: string;
   services: {
     wms: { url: string; getcapabilities: string; getmap_example: string };
+    wfs: { url: string; getcapabilities: string; getfeature_example: string };
     wmts: { url: string; getcapabilities: string };
     wcs: { url: string; getcapabilities: string };
   };
@@ -183,11 +191,12 @@ export async function simulateCostMetrics(input: {
 
 export async function requestSignedUrl(
   filename: string,
-  contentType: string
+  contentType: string,
+  sizeBytes?: number
 ): Promise<{ image_id: string; upload_url: string; raw_key: string }> {
   return req("/api/upload/signed-url", {
     method: "POST",
-    body: JSON.stringify({ filename, content_type: contentType }),
+    body: JSON.stringify({ filename, content_type: contentType, size_bytes: sizeBytes }),
   });
 }
 

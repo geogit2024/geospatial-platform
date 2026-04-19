@@ -23,6 +23,7 @@ class WorkerSettings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://geo:geo@postgres:5432/geodb"
+    postgis_schema: str = "public"
 
     # Worker
     worker_concurrency: int = 4
@@ -36,6 +37,14 @@ class WorkerSettings(BaseSettings):
     redis_claim_min_idle_ms: int = 900000
     redis_claim_batch: int = 10
     redis_claim_interval_seconds: int = 30
+
+    # Vector pipeline / GeoServer publication
+    vector_workspace_prefix: str = "user"
+    vector_default_datastore: str = "postgis_ds"
+    vector_processing_timeout_seconds: int = 900
+    vector_publish_timeout_seconds: int = 120
+    vector_simplify_tolerance: float = 0.0
+    vector_simplify_min_features: int = 5000
 
     class Config:
         env_file = ".env"

@@ -42,8 +42,17 @@ class Image(Base):
     # OGC service URLs (populated after GeoServer publication)
     layer_name: Mapped[str] = mapped_column(String(256), nullable=True)
     wms_url: Mapped[str] = mapped_column(Text, nullable=True)
+    wfs_url: Mapped[str] = mapped_column(Text, nullable=True)
     wmts_url: Mapped[str] = mapped_column(Text, nullable=True)
     wcs_url: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Asset metadata for mixed raster/vector pipeline
+    asset_kind: Mapped[str] = mapped_column(String(32), nullable=True)
+    source_format: Mapped[str] = mapped_column(String(64), nullable=True)
+    geometry_type: Mapped[str] = mapped_column(String(64), nullable=True)
+    workspace: Mapped[str] = mapped_column(String(128), nullable=True)
+    datastore: Mapped[str] = mapped_column(String(128), nullable=True)
+    postgis_table: Mapped[str] = mapped_column(String(128), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

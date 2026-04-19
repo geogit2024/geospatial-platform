@@ -23,7 +23,6 @@ from urllib.parse import urlparse
 
 import httpx
 import redis.asyncio as aioredis
-from sqlalchemy import update
 
 from config import get_settings
 from db_client import AsyncSessionLocal
@@ -38,6 +37,12 @@ from pipeline import (
     to_cog,
 )
 from storage_client import download_from_bucket, get_cog_public_url, upload_to_bucket
+from services.geoserver_service import GeoServerVectorService, build_workspace_name
+from services.vector_processor import (
+    build_postgis_table_name,
+    detect_vector_type,
+    process_vector_file,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +84,115 @@ async def _touch_image(image_id: str) -> None:
     await _update_image(image_id)
 
 
+async def _ensure_layers_metadata_table() -> None:
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS layers_metadata (
+                    id VARCHAR(36) PRIMARY KEY,
+                    image_id VARCHAR(36) NOT NULL UNIQUE,
+                    nome VARCHAR(512) NOT NULL,
+                    tipo VARCHAR(64) NOT NULL,
+                    geometry_type VARCHAR(64),
+                    tabela_postgis VARCHAR(128),
+                    workspace VARCHAR(128),
+                    datastore VARCHAR(128),
+                    wms_url TEXT,
+                    wfs_url TEXT,
+                    bbox TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+        )
+        await session.commit()
+
+
+async def _ensure_image_extended_columns() -> None:
+    from sqlalchemy import text
+
+    statements = [
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS wfs_url TEXT;",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS asset_kind VARCHAR(32);",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS source_format VARCHAR(64);",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS workspace VARCHAR(128);",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS datastore VARCHAR(128);",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS postgis_table VARCHAR(128);",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS geometry_type VARCHAR(64);",
+    ]
+
+    async with AsyncSessionLocal() as session:
+        for statement in statements:
+            try:
+                await session.execute(text(statement))
+            except Exception as exc:
+                log.warning("Schema compatibility update skipped for statement '%s': %s", statement, exc)
+        await session.commit()
+
+
+async def _upsert_layer_metadata(
+    *,
+    image_id: str,
+    nome: str,
+    tipo: str,
+    geometry_type: Optional[str],
+    tabela_postgis: Optional[str],
+    workspace: Optional[str],
+    datastore: Optional[str],
+    wms_url: Optional[str],
+    wfs_url: Optional[str],
+    bbox: Optional[dict],
+) -> None:
+    from sqlalchemy import text
+
+    await _ensure_layers_metadata_table()
+    payload = {
+        "id": image_id,
+        "image_id": image_id,
+        "nome": nome,
+        "tipo": tipo,
+        "geometry_type": geometry_type,
+        "tabela_postgis": tabela_postgis,
+        "workspace": workspace,
+        "datastore": datastore,
+        "wms_url": wms_url,
+        "wfs_url": wfs_url,
+        "bbox": json.dumps(bbox) if bbox else None,
+    }
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO layers_metadata (
+                    id, image_id, nome, tipo, geometry_type, tabela_postgis,
+                    workspace, datastore, wms_url, wfs_url, bbox
+                ) VALUES (
+                    :id, :image_id, :nome, :tipo, :geometry_type, :tabela_postgis,
+                    :workspace, :datastore, :wms_url, :wfs_url, :bbox
+                )
+                ON CONFLICT (image_id) DO UPDATE SET
+                    nome = EXCLUDED.nome,
+                    tipo = EXCLUDED.tipo,
+                    geometry_type = EXCLUDED.geometry_type,
+                    tabela_postgis = EXCLUDED.tabela_postgis,
+                    workspace = EXCLUDED.workspace,
+                    datastore = EXCLUDED.datastore,
+                    wms_url = EXCLUDED.wms_url,
+                    wfs_url = EXCLUDED.wfs_url,
+                    bbox = EXCLUDED.bbox,
+                    updated_at = NOW();
+                """
+            ),
+            payload,
+        )
+        await session.commit()
+
+
 async def _get_image_runtime_state(image_id: str) -> Optional[dict]:
     from sqlalchemy import text
 
@@ -86,7 +200,8 @@ async def _get_image_runtime_state(image_id: str) -> Optional[dict]:
         row = await session.execute(
             text(
                 """
-                SELECT status, updated_at, original_key, processed_key, filename
+                SELECT status, updated_at, original_key, processed_key, filename,
+                       asset_kind, source_format, workspace, datastore, postgis_table
                 FROM images
                 WHERE id = :image_id
                 """
@@ -104,7 +219,26 @@ async def _get_image_runtime_state(image_id: str) -> Optional[dict]:
         "original_key": record[2],
         "processed_key": record[3],
         "filename": record[4],
+        "asset_kind": record[5],
+        "source_format": record[6],
+        "workspace": record[7],
+        "datastore": record[8],
+        "postgis_table": record[9],
     }
+
+
+async def _get_image_tenant_id(image_id: str) -> str:
+    from sqlalchemy import text
+
+    async with AsyncSessionLocal() as session:
+        row = await session.execute(
+            text("SELECT tenant_id FROM images WHERE id = :image_id"),
+            {"image_id": image_id},
+        )
+        record = row.first()
+
+    tenant_id = str(record[0] or "").strip() if record else ""
+    return tenant_id or "default"
 
 
 def _is_recent_heartbeat(updated_at: Optional[datetime]) -> bool:
@@ -197,42 +331,92 @@ async def validate_wms_layer(
 
 async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> None:
     """
-    Stage 1 - GDAL pipeline:
-      1. Download raw file from object storage
-      2. Audit (CRS, bbox, NoData)
-      3. Normalize -> reproject to EPSG:3857 -> NoData -> COG
-      4. Extract metadata (native + WGS84 bbox)
-      5. Upload COG to processed bucket
-      6. Push event for GeoServer publication stage
+    Stage 1:
+      - raster: normalize to COG and emit publish event
+      - vector: normalize and persist in PostGIS, then emit publish event
     """
     log.info("[%s] Starting pipeline for %s", image_id, filename)
     await _update_image(image_id, status="processing", error_message=None)
 
     heartbeat_task = asyncio.create_task(_progress_heartbeat(image_id, "processing"))
+    vector_type = detect_vector_type(filename)
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             ext = Path(filename).suffix or ".tif"
             raw_path = os.path.join(tmpdir, f"raw{ext}")
-            cog_path = os.path.join(tmpdir, "cog.tif")
 
-            # 1. Download
+            # 1. Download source object
             log.info("[%s] Downloading %s", image_id, raw_key)
             await _blocking_call(download_from_bucket, settings.storage_bucket_raw, raw_key, raw_path)
 
-            # 2. Audit
+            if vector_type:
+                table_name = build_postgis_table_name(image_id)
+                tenant_id = await _get_image_tenant_id(image_id)
+                workspace = build_workspace_name(tenant_id)
+                datastore = settings.vector_default_datastore
+
+                vector_result = await asyncio.wait_for(
+                    _blocking_call(process_vector_file, raw_path, vector_type, table_name),
+                    timeout=max(int(settings.vector_processing_timeout_seconds), 60),
+                )
+                bbox = vector_result["bbox_wgs84"]
+                await _update_image(
+                    image_id,
+                    status="processed",
+                    processed_key=None,
+                    crs=vector_result["crs"],
+                    bbox_minx=bbox["minx"],
+                    bbox_miny=bbox["miny"],
+                    bbox_maxx=bbox["maxx"],
+                    bbox_maxy=bbox["maxy"],
+                    asset_kind="vector",
+                    source_format=vector_type,
+                    workspace=workspace,
+                    datastore=datastore,
+                    postgis_table=table_name,
+                    geometry_type=vector_result["geometry_type"],
+                )
+
+                r = _build_redis_client()
+                await r.xadd(
+                    settings.redis_stream_processed,
+                    {
+                        "image_id": image_id,
+                        "filename": filename,
+                        "vector": "1",
+                        "workspace": workspace,
+                        "datastore": datastore,
+                        "table_name": table_name,
+                        "geometry_type": vector_result["geometry_type"],
+                        "native_crs": "EPSG:4326",
+                        "native_bbox": json.dumps(bbox),
+                    },
+                )
+                await r.aclose()
+                log.info(
+                    "[%s] Vector processing complete. table=%s workspace=%s",
+                    image_id,
+                    table_name,
+                    workspace,
+                )
+                return
+
+            cog_path = os.path.join(tmpdir, "cog.tif")
+
+            # 2. Raster audit
             audit = await _blocking_call(audit_raster, raw_path)
             if audit["issues"]:
                 log.warning("[%s] Raster issues detected: %s", image_id, audit["issues"])
 
-            # 3. Normalize (assign CRS -> EPSG:3857 -> NoData -> COG)
+            # 3. Raster normalize (assign CRS -> EPSG:3857 -> NoData -> COG)
             log.info("[%s] Normalizing raster", image_id)
             await _blocking_call(normalize_raster, raw_path, cog_path, "EPSG:4326")
 
-            # 4. Extract metadata from normalized COG
+            # 4. Raster metadata from normalized COG
             metadata = await _blocking_call(get_raster_metadata, cog_path)
             log.info(
-                "[%s] Metadata: crs=%s  native_bbox=%s  wgs84_bbox=%s",
+                "[%s] Metadata: crs=%s native_bbox=%s wgs84_bbox=%s",
                 image_id,
                 metadata["crs"],
                 metadata["bbox"],
@@ -244,10 +428,10 @@ async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> 
             log.info("[%s] Uploading COG -> %s", image_id, processed_key)
             await _blocking_call(upload_to_bucket, cog_path, settings.storage_bucket_processed, processed_key)
 
-            # 6. Build public URL for GeoServer to read the COG
+            # 6. Build public URL for GeoServer COG coverage store
             gs_data_path = get_cog_public_url(settings.storage_bucket_processed, processed_key)
 
-        # Store WGS84 bbox in DB (human-readable degrees for the dashboard)
+        # Store WGS84 bbox in DB for dashboard/queries
         wgs84 = metadata["bbox_wgs84"]
         await _update_image(
             image_id,
@@ -258,9 +442,14 @@ async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> 
             bbox_miny=wgs84["miny"],
             bbox_maxx=wgs84["maxx"],
             bbox_maxy=wgs84["maxy"],
+            asset_kind="raster",
+            source_format=(Path(filename).suffix or ".tif").lower().lstrip("."),
+            workspace=settings.geoserver_workspace,
+            datastore=None,
+            postgis_table=None,
+            geometry_type="RASTER",
         )
 
-        # Publish event for GeoServer publication - include native bbox + crs
         native = metadata["bbox"]
         r = _build_redis_client()
         await r.xadd(
@@ -272,10 +461,11 @@ async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> 
                 "filename": filename,
                 "native_crs": metadata["crs"],
                 "native_bbox": json.dumps(native),
+                "vector": "0",
             },
         )
         await r.aclose()
-        log.info("[%s] Processing complete. COG at %s", image_id, processed_key)
+        log.info("[%s] Raster processing complete. COG at %s", image_id, processed_key)
 
     except Exception as exc:
         log.error("[%s] Pipeline error: %s", image_id, exc, exc_info=True)
@@ -287,50 +477,121 @@ async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> 
 
 async def publish_processed_image(
     image_id: str,
-    gs_data_path: str,
+    gs_data_path: Optional[str],
     filename: str,
     native_crs: str = "EPSG:3857",
     native_bbox: Optional[dict] = None,
+    *,
+    is_vector: bool = False,
+    workspace: Optional[str] = None,
+    datastore: Optional[str] = None,
+    table_name: Optional[str] = None,
+    geometry_type: Optional[str] = None,
 ) -> None:
     """
-    Stage 2 - GeoServer:
-      1. Create / update coverageStore + coverage layer
-      2. Configure GWC tile caching (EPSG:3857 + EPSG:4326 gridsets)
-      3. Validate WMS GetMap -> if failed, rollback to error status
+    Stage 2 - GeoServer publication.
     """
-    log.info("[%s] Publishing to GeoServer", image_id)
+    log.info("[%s] Publishing to GeoServer (vector=%s)", image_id, is_vector)
     await _update_image(image_id, status="publishing", error_message=None)
 
     heartbeat_task = asyncio.create_task(_progress_heartbeat(image_id, "publishing"))
 
     try:
-        # GeoServerClient uses synchronous httpx - run in thread executor to avoid
-        # blocking the asyncio event loop during REST calls (up to 60s each).
         loop = asyncio.get_event_loop()
-        client = GeoServerClient()
-        result = await loop.run_in_executor(
-            None,
-            lambda: client.publish_cog(
+        if is_vector:
+            vector_client = GeoServerVectorService()
+            workspace_name = workspace or build_workspace_name(await _get_image_tenant_id(image_id))
+            datastore_name = datastore or settings.vector_default_datastore
+            table = table_name or build_postgis_table_name(image_id)
+            published_workspace = workspace_name
+            published_datastore = datastore_name
+            published_table = table
+
+            def _publish_vector():
+                vector_client.create_workspace(workspace_name)
+                datastore_created = vector_client.create_datastore(workspace_name, datastore_name)
+                return vector_client.publish_layer(
+                    workspace_name,
+                    datastore_created,
+                    table,
+                    title=filename,
+                )
+
+            result = await loop.run_in_executor(None, _publish_vector)
+
+            await _update_image(
+                image_id,
+                status="published",
+                layer_name=result["layer_name"],
+                wms_url=result["wms_url"],
+                wfs_url=result["wfs_url"],
+                wmts_url=None,
+                wcs_url=None,
+                workspace=workspace_name,
+                datastore=datastore_name,
+                postgis_table=table,
+                asset_kind="vector",
+            )
+            await _upsert_layer_metadata(
                 image_id=image_id,
-                cog_url=gs_data_path,
-                title=filename,
-                crs=native_crs,
-                native_bbox=native_bbox,
-            ),
-        )
+                nome=filename,
+                tipo="vector",
+                geometry_type=geometry_type,
+                tabela_postgis=table,
+                workspace=workspace_name,
+                datastore=datastore_name,
+                wms_url=result["wms_url"],
+                wfs_url=result["wfs_url"],
+                bbox=native_bbox,
+            )
+            log.info("[%s] Vector layer published: %s", image_id, result["layer_name"])
+        else:
+            if not gs_data_path:
+                raise RuntimeError("Missing gs_data_path for raster publication")
+            published_workspace = settings.geoserver_workspace
+            published_datastore = None
+            published_table = None
 
-        await _update_image(
-            image_id,
-            status="published",
-            layer_name=result["layer_name"],
-            wms_url=result["wms_url"],
-            wmts_url=result["wmts_url"],
-            wcs_url=result["wcs_url"],
-        )
-        log.info("[%s] Published. Layer: %s", image_id, result["layer_name"])
+            client = GeoServerClient()
+            result = await loop.run_in_executor(
+                None,
+                lambda: client.publish_cog(
+                    image_id=image_id,
+                    cog_url=gs_data_path,
+                    title=filename,
+                    crs=native_crs,
+                    native_bbox=native_bbox,
+                ),
+            )
 
-        # WMS validation - give GeoServer time to complete COG indexing.
-        # Retry up to 3 times (5s apart) to avoid false failures on large files.
+            await _update_image(
+                image_id,
+                status="published",
+                layer_name=result["layer_name"],
+                wms_url=result["wms_url"],
+                wmts_url=result["wmts_url"],
+                wcs_url=result["wcs_url"],
+                wfs_url=None,
+                workspace=settings.geoserver_workspace,
+                datastore=None,
+                postgis_table=None,
+                asset_kind="raster",
+            )
+            await _upsert_layer_metadata(
+                image_id=image_id,
+                nome=filename,
+                tipo="raster",
+                geometry_type="RASTER",
+                tabela_postgis=None,
+                workspace=settings.geoserver_workspace,
+                datastore=None,
+                wms_url=result["wms_url"],
+                wfs_url=None,
+                bbox=native_bbox,
+            )
+            log.info("[%s] Raster layer published: %s", image_id, result["layer_name"])
+
+        # Validation retries (WMS) for both raster and vector layers.
         await asyncio.sleep(5)
         if native_bbox:
             validated = False
@@ -346,18 +607,31 @@ async def publish_processed_image(
                     await asyncio.sleep(5)
 
             if not validated:
-                log.error("[%s] WMS validation failed after 3 attempts - rolling back", image_id)
-                store_name = f"img_{image_id.replace('-', '_')}"
-                try:
-                    await loop.run_in_executor(
-                        None,
-                        lambda: client._delete(
-                            f"/workspaces/{client.ws}/coveragestores/{store_name}.json",
-                            params={"recurse": "true"},
-                        ),
-                    )
-                except Exception as del_exc:
-                    log.warning("[%s] Rollback GeoServer delete failed: %s", image_id, del_exc)
+                log.error("[%s] WMS validation failed after publication - rolling back", image_id)
+                if is_vector:
+                    try:
+                        await loop.run_in_executor(
+                            None,
+                            lambda: GeoServerVectorService().delete_layer(
+                                published_workspace,
+                                published_datastore or settings.vector_default_datastore,
+                                published_table or build_postgis_table_name(image_id),
+                            ),
+                        )
+                    except Exception as del_exc:
+                        log.warning("[%s] Vector rollback failed: %s", image_id, del_exc)
+                else:
+                    store_name = f"img_{image_id.replace('-', '_')}"
+                    try:
+                        await loop.run_in_executor(
+                            None,
+                            lambda: GeoServerClient()._delete(
+                                f"/workspaces/{settings.geoserver_workspace}/coveragestores/{store_name}.json",
+                                params={"recurse": "true"},
+                            ),
+                        )
+                    except Exception as del_exc:
+                        log.warning("[%s] Raster rollback failed: %s", image_id, del_exc)
 
                 await _update_image(
                     image_id,
@@ -365,7 +639,7 @@ async def publish_processed_image(
                     error_message="WMS GetMap validation failed after publication",
                 )
         else:
-            log.info("[%s] Skipping WMS validation - native_bbox not available", image_id)
+            log.info("[%s] Skipping WMS validation - bbox not available", image_id)
 
     except Exception as exc:
         log.error("[%s] GeoServer error: %s", image_id, exc, exc_info=True)
@@ -416,6 +690,34 @@ async def _queue_publish_event(
     )
 
 
+async def _queue_publish_event_vector(
+    r: aioredis.Redis,
+    *,
+    image_id: str,
+    filename: str,
+    workspace: str,
+    datastore: str,
+    table_name: str,
+    native_crs: str,
+    native_bbox: Optional[dict] = None,
+    geometry_type: Optional[str] = None,
+) -> None:
+    payload = {
+        "image_id": image_id,
+        "filename": filename,
+        "vector": "1",
+        "workspace": workspace,
+        "datastore": datastore,
+        "table_name": table_name,
+        "native_crs": native_crs,
+    }
+    if geometry_type:
+        payload["geometry_type"] = geometry_type
+    if native_bbox:
+        payload["native_bbox"] = json.dumps(native_bbox)
+    await r.xadd(settings.redis_stream_processed, payload)
+
+
 async def recover_stalled_images(r: aioredis.Redis) -> None:
     """Recover orphaned records left in processing/publishing after abrupt container exits."""
     if not settings.worker_enable_stalled_recovery:
@@ -431,7 +733,9 @@ async def recover_stalled_images(r: aioredis.Redis) -> None:
         rows = await session.execute(
             text(
                 """
-                SELECT id, filename, status, original_key, processed_key, crs, updated_at
+                SELECT id, filename, status, original_key, processed_key, crs, updated_at,
+                       asset_kind, workspace, datastore, postgis_table, geometry_type,
+                       bbox_minx, bbox_miny, bbox_maxx, bbox_maxy
                 FROM images
                 WHERE (status = 'processing' AND updated_at < :processing_cutoff)
                    OR (status = 'publishing' AND updated_at < :publishing_cutoff)
@@ -457,6 +761,15 @@ async def recover_stalled_images(r: aioredis.Redis) -> None:
         processed_key = row[4]
         crs = row[5] or "EPSG:3857"
         updated_at = row[6]
+        asset_kind = str(row[7] or "").lower()
+        workspace = row[8]
+        datastore = row[9]
+        postgis_table = row[10]
+        geometry_type = row[11]
+        bbox_minx = row[12]
+        bbox_miny = row[13]
+        bbox_maxx = row[14]
+        bbox_maxy = row[15]
 
         if status == "processing":
             if not original_key:
@@ -479,13 +792,60 @@ async def recover_stalled_images(r: aioredis.Redis) -> None:
             continue
 
         if status == "publishing":
+            bbox = None
+            if (
+                bbox_minx is not None
+                and bbox_miny is not None
+                and bbox_maxx is not None
+                and bbox_maxy is not None
+            ):
+                bbox = {
+                    "minx": float(bbox_minx),
+                    "miny": float(bbox_miny),
+                    "maxx": float(bbox_maxx),
+                    "maxy": float(bbox_maxy),
+                }
+
+            if asset_kind == "vector":
+                if not workspace or not datastore or not postgis_table:
+                    await _update_image(
+                        image_id,
+                        status="error",
+                        error_message=(
+                            "Recovery failed: missing workspace/datastore/postgis_table "
+                            "for stalled vector publishing item"
+                        ),
+                    )
+                    log.error("[%s] Stalled vector publishing recovery failed: missing metadata", image_id)
+                    continue
+
+                await _update_image(image_id, status="processed", error_message=None)
+                await _queue_publish_event_vector(
+                    r,
+                    image_id=image_id,
+                    filename=filename,
+                    workspace=workspace,
+                    datastore=datastore,
+                    table_name=postgis_table,
+                    native_crs=crs or "EPSG:4326",
+                    native_bbox=bbox,
+                    geometry_type=geometry_type,
+                )
+                recovered += 1
+                log.warning(
+                    "[%s] Recovered stalled vector publishing item (last update: %s) and re-queued publish stage",
+                    image_id,
+                    updated_at,
+                )
+                continue
+
             if not processed_key:
                 await _update_image(
                     image_id,
                     status="error",
                     error_message="Recovery failed: missing processed_key for stalled publishing item",
                 )
-                log.error("[%s] Stalled publishing recovery failed: missing processed_key", image_id)
+                log.error("[%s] Stalled raster publishing recovery failed: missing processed_key", image_id)
                 continue
 
             await _update_image(image_id, status="processed", error_message=None)
@@ -498,7 +858,7 @@ async def recover_stalled_images(r: aioredis.Redis) -> None:
             )
             recovered += 1
             log.warning(
-                "[%s] Recovered stalled publishing item (last update: %s) and re-queued publish stage",
+                "[%s] Recovered stalled raster publishing item (last update: %s) and re-queued publish stage",
                 image_id,
                 updated_at,
             )
@@ -567,10 +927,15 @@ async def _handle_stream_message(stream: str, data: dict) -> None:
 
         await publish_processed_image(
             image_id=image_id,
-            gs_data_path=data["gs_data_path"],
+            gs_data_path=data.get("gs_data_path"),
             filename=data["filename"],
             native_crs=data.get("native_crs", "EPSG:3857"),
             native_bbox=native_bbox,
+            is_vector=str(data.get("vector", "0")) == "1",
+            workspace=data.get("workspace"),
+            datastore=data.get("datastore"),
+            table_name=data.get("table_name"),
+            geometry_type=data.get("geometry_type"),
         )
 
 
@@ -659,12 +1024,10 @@ async def consume_stream(r: aioredis.Redis, stream: str, consumer_name: str) -> 
 
 async def sync_geoserver_on_startup() -> None:
     """
-    Re-publish all 'published' images after a GeoServer restart.
+    Re-publish all published images after a GeoServer restart.
 
-    GeoServer loses all layer configuration when the container restarts
-    (no persistent volume on Railway).  On every worker startup we query
-    the DB and upsert every published layer so the service recovers
-    automatically without manual intervention.
+    GeoServer can lose in-memory catalog entries after restart.
+    On worker startup we upsert published raster and vector layers.
     """
     from sqlalchemy import text
 
@@ -673,8 +1036,8 @@ async def sync_geoserver_on_startup() -> None:
         async with AsyncSessionLocal() as session:
             rows = await session.execute(
                 text(
-                    "SELECT id, processed_key, layer_name, crs, "
-                    "bbox_minx, bbox_miny, bbox_maxx, bbox_maxy "
+                    "SELECT id, filename, asset_kind, processed_key, layer_name, crs, "
+                    "workspace, datastore, postgis_table "
                     "FROM images WHERE status = 'published'"
                 )
             )
@@ -684,35 +1047,62 @@ async def sync_geoserver_on_startup() -> None:
             log.info("No published images to sync.")
             return
 
-        gs = GeoServerClient()
-        gs.ensure_workspace()
+        gs_raster = GeoServerClient()
+        gs_raster.ensure_workspace()
+        gs_vector = GeoServerVectorService()
 
         for row in images:
-            img_id, processed_key, layer_name, crs, bminx, bminy, bmaxx, bmaxy = row
+            (
+                img_id,
+                filename,
+                asset_kind,
+                processed_key,
+                layer_name,
+                crs,
+                workspace,
+                datastore,
+                postgis_table,
+            ) = row
+
+            if str(asset_kind or "").lower() == "vector":
+                if not workspace or not datastore or not postgis_table:
+                    log.warning("[sync] Skipping vector image %s: missing workspace/datastore/table", img_id)
+                    continue
+
+                try:
+                    gs_vector.create_workspace(workspace)
+                    gs_vector.create_datastore(workspace, datastore)
+                    gs_vector.publish_layer(
+                        workspace=workspace,
+                        datastore=datastore,
+                        table_name=postgis_table,
+                        title=filename or postgis_table,
+                    )
+                    log.info("[sync] Re-published vector layer %s:%s", workspace, postgis_table)
+                except Exception as exc:
+                    log.error("[sync] Failed to re-publish vector %s: %s", img_id, exc)
+                continue
+
             if not processed_key or not layer_name:
                 continue
 
             store_name = f"img_{img_id.replace('-', '_')}"
-            cog_url    = get_cog_public_url(
-                settings.storage_bucket_processed, processed_key
-            )
-
-            # DB stores WGS84 degrees (bbox_minx/miny/maxx/maxy).
-            # We must NOT pass these as native_bbox when crs=EPSG:3857 — they
-            # are degree values, not metres.  Pass None so GeoServer auto-detects
-            # the extent from the COG file itself via HTTP Range requests.
+            cog_url = get_cog_public_url(settings.storage_bucket_processed, processed_key)
             native_bbox = None
 
-            log.info("[sync] Upserting layer: %s", layer_name)
+            log.info("[sync] Re-publishing raster layer: %s", layer_name)
             try:
-                gs._upsert_store(store_name, cog_url)
-                gs._upsert_coverage(
-                    store_name, store_name, layer_name,
-                    crs or "EPSG:3857", native_bbox,
+                gs_raster._upsert_store(store_name, cog_url)
+                gs_raster._upsert_coverage(
+                    store_name,
+                    store_name,
+                    layer_name,
+                    crs or "EPSG:3857",
+                    native_bbox,
                 )
-                gs._configure_gwc_layer(f"{gs.ws}:{store_name}")
+                gs_raster._configure_gwc_layer(f"{gs_raster.ws}:{store_name}")
             except Exception as exc:
-                log.error("[sync] Failed to upsert %s: %s", layer_name, exc)
+                log.error("[sync] Failed to re-publish raster %s: %s", layer_name, exc)
 
         log.info("GeoServer startup sync complete.")
 
@@ -720,8 +1110,7 @@ async def sync_geoserver_on_startup() -> None:
         log.error("GeoServer startup sync failed: %s", exc, exc_info=True)
 
 
-# ─── Health server (Cloud Run requires HTTP on PORT) ────────────────────────────
-
+# Health server (Cloud Run requires HTTP on PORT)
 def _start_health_server() -> None:
     port = int(os.environ.get("PORT", 8080))
 
@@ -808,6 +1197,8 @@ async def main() -> None:
     _diag_redis_connectivity()
     r = _build_redis_client()
     await _wait_for_redis_ready(r)
+    await _ensure_image_extended_columns()
+    await _ensure_layers_metadata_table()
     await ensure_consumer_groups(r)
     await recover_stalled_images(r)
 

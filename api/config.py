@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     geoserver_admin_password: str = "geoserver"
     geoserver_workspace: str = "geoimages"
     geoserver_data_dir: str = "/opt/geoserver_data"
+    vector_default_datastore: str = "postgis_ds"
+    postgis_schema: str = "public"
 
     # Database
     database_url: str = "postgresql+asyncpg://geo:geo@postgres:5432/geodb"
@@ -56,6 +58,7 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     smtp_use_ssl: bool = False
     app_public_url: str = "http://localhost:3000"
+    upload_max_size_mb: int = 2048
 
 
 @lru_cache
