@@ -5,6 +5,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -25,6 +26,26 @@ _INVALID_IDENTIFIER_CHARS_RE = re.compile(r"[^a-z0-9_]+")
 _REQUIRED_SHAPEFILE_PARTS = (".shp", ".shx", ".dbf")
 
 
+def _normalize_psycopg2_query_options(database_url: str) -> str:
+    parsed = urlsplit(database_url)
+    if not parsed.query:
+        return database_url
+
+    params = parse_qsl(parsed.query, keep_blank_values=True)
+    has_sslmode = any(key == "sslmode" for key, _ in params)
+    normalized: list[tuple[str, str]] = []
+    for key, value in params:
+        if key == "ssl":
+            if has_sslmode:
+                continue
+            normalized.append(("sslmode", value))
+            continue
+        normalized.append((key, value))
+
+    updated_query = urlencode(normalized, doseq=True)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, updated_query, parsed.fragment))
+
+
 def _require_geopandas():
     try:
         import geopandas as gpd  # type: ignore
@@ -37,11 +58,14 @@ def _require_geopandas():
 
 def _to_sync_database_url(database_url: str) -> str:
     if database_url.startswith("postgresql+asyncpg://"):
-        return database_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
-    if database_url.startswith("postgres://"):
-        return database_url.replace("postgres://", "postgresql+psycopg2://", 1)
-    if database_url.startswith("postgresql://") and "+psycopg2" not in database_url:
-        return database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        database_url = database_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    elif database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif database_url.startswith("postgresql://") and "+psycopg2" not in database_url:
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+    if database_url.startswith("postgresql+psycopg2://"):
+        return _normalize_psycopg2_query_options(database_url)
     return database_url
 
 
