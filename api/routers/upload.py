@@ -56,6 +56,7 @@ class UploadResponse(BaseModel):
     image_id: str
     upload_url: str
     raw_key: str
+    content_type: str
     expires_in: int
 
 
@@ -107,6 +108,7 @@ async def get_signed_upload_url(
         image_id=image_id,
         upload_url=upload_url,
         raw_key=raw_key,
+        content_type=content_type,
         expires_in=3600,
     )
 

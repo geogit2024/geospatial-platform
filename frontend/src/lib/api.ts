@@ -193,7 +193,7 @@ export async function requestSignedUrl(
   filename: string,
   contentType: string,
   sizeBytes?: number
-): Promise<{ image_id: string; upload_url: string; raw_key: string }> {
+): Promise<{ image_id: string; upload_url: string; raw_key: string; content_type: string }> {
   return req("/api/upload/signed-url", {
     method: "POST",
     body: JSON.stringify({ filename, content_type: contentType, size_bytes: sizeBytes }),
@@ -203,12 +203,14 @@ export async function requestSignedUrl(
 export async function uploadFileDirect(
   uploadUrl: string,
   file: File,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  signedContentType?: string
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", uploadUrl);
-    xhr.setRequestHeader("Content-Type", file.type || "image/tiff");
+    const contentType = signedContentType || file.type || "application/octet-stream";
+    xhr.setRequestHeader("Content-Type", contentType);
     if (onProgress) {
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));

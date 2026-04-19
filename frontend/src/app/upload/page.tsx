@@ -62,7 +62,7 @@ export default function UploadPage() {
 
     try {
       setStep("signing");
-      const { image_id, upload_url } = await requestSignedUrl(
+      const { image_id, upload_url, content_type } = await requestSignedUrl(
         file.name,
         file.type || "application/octet-stream",
         file.size
@@ -70,7 +70,7 @@ export default function UploadPage() {
       setImageId(image_id);
 
       setStep("uploading");
-      await uploadFileDirect(upload_url, file, setProgress);
+      await uploadFileDirect(upload_url, file, setProgress, content_type);
 
       setStep("confirming");
       await confirmUpload(image_id);
