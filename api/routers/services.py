@@ -349,9 +349,10 @@ async def wms_proxy(
     and invalid TLS issues on public :8080 endpoints.
     """
     image = await _get_published_image(image_id, db)
+    workspace = image.workspace or settings.geoserver_workspace
 
     wms_endpoint = (
-        f"{settings.geoserver_url.rstrip('/')}/{settings.geoserver_workspace}/wms"
+        f"{settings.geoserver_url.rstrip('/')}/{workspace}/wms"
     )
 
     # Normalize WMS params to lowercase keys because some clients (ArcGIS)
