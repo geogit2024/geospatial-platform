@@ -87,7 +87,12 @@ def _run_daily_cost_query(*, table_id: str, start: date, end: date, project_id: 
         currency
       FROM `{table_id}`
       WHERE DATE(usage_start_time) BETWEEN @start_date AND @end_date
-        AND (@project_id = '' OR project.id = @project_id)
+        AND (
+          @project_id = ''
+          OR project.id = @project_id
+          OR CAST(project.number AS STRING) = @project_id
+          OR LOWER(project.name) = LOWER(@project_id)
+        )
     ),
     daily AS (
       SELECT
@@ -137,6 +142,38 @@ def _run_daily_cost_query(*, table_id: str, start: date, end: date, project_id: 
 
     rows = client.query(query, job_config=job_config).result()
     return [dict(row.items()) for row in rows]
+
+
+async def _run_daily_cost_query_with_fallback(
+    *,
+    table_id: str,
+    start: date,
+    end: date,
+    project_id: str,
+) -> list[dict[str, Any]]:
+    """
+    Run billing query with project filter, but automatically fallback to all projects
+    when the configured filter returns no rows for the selected period.
+    """
+    project_filter = project_id.strip()
+    rows = await asyncio.to_thread(
+        _run_daily_cost_query,
+        table_id=table_id,
+        start=start,
+        end=end,
+        project_id=project_filter,
+    )
+    if rows or not project_filter:
+        return rows
+
+    fallback_rows = await asyncio.to_thread(
+        _run_daily_cost_query,
+        table_id=table_id,
+        start=start,
+        end=end,
+        project_id="",
+    )
+    return fallback_rows
 
 
 def _resolve_table_id(table_ref: str) -> str:
@@ -242,15 +279,13 @@ async def get_billing_cost_metrics_from_export(
     window_start = today - timedelta(days=max(window_days - 1, 0))
     month_start = today.replace(day=1)
 
-    rows_window = await asyncio.to_thread(
-        _run_daily_cost_query,
+    rows_window = await _run_daily_cost_query_with_fallback(
         table_id=table_id,
         start=window_start,
         end=today,
         project_id=project_id,
     )
-    rows_month = await asyncio.to_thread(
-        _run_daily_cost_query,
+    rows_month = await _run_daily_cost_query_with_fallback(
         table_id=table_id,
         start=month_start,
         end=today,
