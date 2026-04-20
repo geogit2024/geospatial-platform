@@ -24,6 +24,39 @@ interface LayerState {
   leafletLayer: L.TileLayer.WMS | null;
 }
 
+type BasemapKey = "osm" | "satellite" | "topo" | "light";
+
+const BASEMAPS: Record<
+  BasemapKey,
+  { label: string; url: string; attribution: string; maxZoom?: number; subdomains?: string | string[] }
+> = {
+  osm: {
+    label: "Ruas (OSM)",
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: "© OpenStreetMap contributors",
+    maxZoom: 19,
+  },
+  satellite: {
+    label: "Satelite (Esri)",
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles © Esri",
+    maxZoom: 19,
+  },
+  topo: {
+    label: "Topografico",
+    url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+    attribution: "© OpenTopoMap contributors",
+    maxZoom: 17,
+  },
+  light: {
+    label: "Claro (Carto)",
+    url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+    attribution: "© OpenStreetMap © CARTO",
+    maxZoom: 20,
+    subdomains: "abcd",
+  },
+};
+
 export default function MapClient({
   initialLayerName,
   initialImageId,
@@ -33,8 +66,10 @@ export default function MapClient({
 }) {
   const mapRef = useRef<L.Map | null>(null);
   const mapElRef = useRef<HTMLDivElement>(null);
+  const basemapLayerRef = useRef<L.TileLayer | null>(null);
   const [layers, setLayers] = useState<LayerState[]>([]);
   const [loadingLayers, setLoadingLayers] = useState(false);
+  const [basemap, setBasemap] = useState<BasemapKey>("osm");
 
   useEffect(() => {
     if (mapRef.current || !mapElRef.current) return;
@@ -44,9 +79,11 @@ export default function MapClient({
       zoom: 4,
     });
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "© OpenStreetMap contributors",
-      maxZoom: 19,
+    const selected = BASEMAPS.osm;
+    basemapLayerRef.current = L.tileLayer(selected.url, {
+      attribution: selected.attribution,
+      maxZoom: selected.maxZoom ?? 19,
+      subdomains: selected.subdomains,
     }).addTo(map);
 
     mapRef.current = map;
@@ -54,8 +91,25 @@ export default function MapClient({
     return () => {
       map.remove();
       mapRef.current = null;
+      basemapLayerRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (basemapLayerRef.current) {
+      map.removeLayer(basemapLayerRef.current);
+    }
+
+    const selected = BASEMAPS[basemap];
+    basemapLayerRef.current = L.tileLayer(selected.url, {
+      attribution: selected.attribution,
+      maxZoom: selected.maxZoom ?? 19,
+      subdomains: selected.subdomains,
+    }).addTo(map);
+  }, [basemap]);
 
   const loadPublishedImages = async () => {
     if (!mapRef.current) return;
@@ -160,6 +214,23 @@ export default function MapClient({
           <button onClick={loadPublishedImages} className="p-1 rounded hover:bg-[#122033] text-[#7f97b5]" title="Recarregar">
             <RefreshCw className={cn("w-3.5 h-3.5", loadingLayers && "animate-spin")} />
           </button>
+        </div>
+
+        <div className="px-4 py-3 border-b border-[#1f2d44] bg-[#0d1726]">
+          <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[#8fa8c6]">
+            Mapa base
+          </label>
+          <select
+            value={basemap}
+            onChange={(event) => setBasemap(event.target.value as BasemapKey)}
+            className="w-full rounded-md border border-[#27405b] bg-[#102035] px-2.5 py-1.5 text-xs font-medium text-[#dbe8fb] outline-none transition focus:border-[#38bdf8]"
+          >
+            {Object.entries(BASEMAPS).map(([key, item]) => (
+              <option key={key} value={key}>
+                {item.label}
+              </option>
+            ))}
+          </select>
         </div>
 
         {loadingLayers && layers.length === 0 ? (
