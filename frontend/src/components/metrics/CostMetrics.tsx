@@ -6,7 +6,14 @@ import KpiCard from "./KpiCard";
 import CostChart from "./CostChart";
 
 function formatCurrency(value: number, currency: string) {
-  return new Intl.NumberFormat("pt-BR", { style: "currency", currency }).format(value);
+  const abs = Math.abs(value);
+  const showMicro = abs > 0 && abs < 0.01;
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: showMicro ? 4 : 2,
+    maximumFractionDigits: showMicro ? 6 : 2,
+  }).format(value);
 }
 
 export default function CostMetricsSection() {

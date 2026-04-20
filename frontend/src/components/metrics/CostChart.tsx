@@ -7,7 +7,14 @@ interface CostChartProps {
 }
 
 function formatCurrency(value: number, currency: string) {
-  return new Intl.NumberFormat("pt-BR", { style: "currency", currency }).format(value);
+  const abs = Math.abs(value);
+  const showMicro = abs > 0 && abs < 0.01;
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: showMicro ? 4 : 2,
+    maximumFractionDigits: showMicro ? 6 : 2,
+  }).format(value);
 }
 
 function formatDateLabel(date: string) {
@@ -45,9 +52,15 @@ function buildBars(
   return data.map((item, index) => {
     const x = padding.left + index * slot + (slot - barWidth) / 2;
     const totalH = (chartHeight * item.value) / max;
-    const storageH = (chartHeight * item.storage) / max;
-    const processingH = (chartHeight * item.processing) / max;
-    const downloadsH = (chartHeight * item.downloads) / max;
+    const rawStorageH = (chartHeight * item.storage) / max;
+    const rawProcessingH = (chartHeight * item.processing) / max;
+    const rawDownloadsH = (chartHeight * item.downloads) / max;
+    const minVisibleSegment = 1.5;
+    const storageH = item.storage > 0 && rawStorageH > 0 && rawStorageH < minVisibleSegment ? minVisibleSegment : rawStorageH;
+    const processingH =
+      item.processing > 0 && rawProcessingH > 0 && rawProcessingH < minVisibleSegment ? minVisibleSegment : rawProcessingH;
+    const downloadsH =
+      item.downloads > 0 && rawDownloadsH > 0 && rawDownloadsH < minVisibleSegment ? minVisibleSegment : rawDownloadsH;
 
     const chartBottom = padding.top + chartHeight;
     const totalY = chartBottom - totalH;
