@@ -55,6 +55,7 @@ function DistributionDonut({ data }: { data: DistributionByType[] }) {
 
 export default function StorageMetricsSection() {
   const [windowDays, setWindowDays] = useState(30);
+  const [accessType, setAccessType] = useState<"all" | "download" | "ogc">("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<StorageMetrics | null>(null);
@@ -66,7 +67,7 @@ export default function StorageMetricsSection() {
       setLoading(true);
       setError(null);
       try {
-        const response = await getStorageMetrics(windowDays);
+        const response = await getStorageMetrics(windowDays, undefined, accessType);
         if (active) setData(response);
       } catch (err: unknown) {
         if (active) setError(err instanceof Error ? err.message : "Falha ao carregar metricas de uso.");
@@ -79,7 +80,7 @@ export default function StorageMetricsSection() {
     return () => {
       active = false;
     };
-  }, [windowDays]);
+  }, [windowDays, accessType]);
 
   const growthLabel = useMemo(() => {
     if (!data) return "0%";
@@ -140,15 +141,46 @@ export default function StorageMetricsSection() {
         </div>
 
         <div className="rounded-xl border border-[#2a3f58] bg-[#101b2c] p-4 shadow-sm">
-          <p className="text-sm font-semibold text-[#dbe8fb]">Mais acessados</p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-semibold text-[#dbe8fb]">Mais acessados</p>
+            <div className="inline-flex rounded-md border border-[#2a3f58] bg-[#0f1e31] p-0.5 text-[11px]">
+              {[
+                { key: "all", label: "Todos" },
+                { key: "download", label: "Download" },
+                { key: "ogc", label: "OGC" },
+              ].map((item) => (
+                <button
+                  key={item.key}
+                  onClick={() => setAccessType(item.key as "all" | "download" | "ogc")}
+                  className={`rounded px-2 py-1 font-semibold ${
+                    accessType === item.key ? "bg-[#1d4f7a] text-[#dff4ff]" : "text-[#96abc7]"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="mt-3 space-y-2 text-sm">
             {(data?.top_accessed ?? []).map((item) => (
-              <div key={item.id} className="flex items-center justify-between gap-2 border-b border-[#1d2b3e] pb-2">
-                <span className="truncate text-[#9fb3cf]">{item.filename}</span>
-                <span className="font-semibold text-[#dbe8fb]">{item.accesses} acessos</span>
+              <div key={item.id} className="flex items-center justify-between gap-3 border-b border-[#1d2b3e] pb-2">
+                <span className="min-w-0 truncate text-[#9fb3cf]">{item.filename}</span>
+                <div className="flex items-center gap-2 whitespace-nowrap">
+                  <span className="rounded bg-[#133554] px-1.5 py-0.5 text-[11px] font-semibold text-[#9fd9ff]">
+                    D {item.download_accesses}
+                  </span>
+                  <span className="rounded bg-[#13463a] px-1.5 py-0.5 text-[11px] font-semibold text-[#8ff4c9]">
+                    OGC {item.ogc_accesses}
+                  </span>
+                  <span className="font-semibold text-[#dbe8fb]">{item.accesses}</span>
+                </div>
               </div>
             ))}
-            {!loading && !(data?.top_accessed.length) && <p className="text-[#7f97b5]">Sem logs de acesso ainda.</p>}
+            {!loading && !(data?.top_accessed.length) && (
+              <p className="text-[#7f97b5]">
+                {accessType === "ogc" ? "Sem consumo OGC na janela selecionada." : "Sem logs de acesso ainda."}
+              </p>
+            )}
           </div>
         </div>
       </div>

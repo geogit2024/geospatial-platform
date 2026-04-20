@@ -57,6 +57,8 @@ export interface TopAccessedMetric {
   id: string;
   filename: string;
   accesses: number;
+  download_accesses: number;
+  ogc_accesses: number;
 }
 
 export interface UsageSeriesPoint {
@@ -69,6 +71,7 @@ export interface UsageSeriesPoint {
 export interface StorageMetrics {
   tenant_id: string;
   window_days: number;
+  access_type: "all" | "download" | "ogc";
   total_files: number;
   total_size_gb: number;
   avg_size_mb: number;
@@ -164,9 +167,14 @@ export async function getImageDownloadUrl(
   return req<ImageDownloadUrlResponse>(`/api/images/${id}/download-url?source=${source}`);
 }
 
-export async function getStorageMetrics(windowDays = 30, tenantId?: string): Promise<StorageMetrics> {
+export async function getStorageMetrics(
+  windowDays = 30,
+  tenantId?: string,
+  accessType: "all" | "download" | "ogc" = "all"
+): Promise<StorageMetrics> {
   const query = new URLSearchParams({ window_days: String(windowDays) });
   if (tenantId) query.set("tenant_id", tenantId);
+  query.set("access_type", accessType);
   return req<StorageMetrics>(`/api/metrics/storage?${query.toString()}`);
 }
 

@@ -1,4 +1,4 @@
-﻿from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -31,6 +31,8 @@ class TopAccessedItem(BaseModel):
     id: str
     filename: str
     accesses: int
+    download_accesses: int
+    ogc_accesses: int
 
 
 class UsageSeriesItem(BaseModel):
@@ -43,6 +45,7 @@ class UsageSeriesItem(BaseModel):
 class StorageMetricsResponse(BaseModel):
     tenant_id: str
     window_days: int
+    access_type: Literal["all", "download", "ogc"] = "all"
     total_files: int
     total_size_gb: float
     avg_size_mb: float
@@ -102,6 +105,10 @@ class CostSimulationResponse(BaseModel):
 @router.get("/storage", response_model=StorageMetricsResponse)
 async def read_storage_metrics(
     tenant_id: str | None = Query(default=None, description="Tenant external id"),
+    access_type: Literal["all", "download", "ogc"] = Query(
+        default="all",
+        description="Filter ranking by access type: all, download, or ogc service calls",
+    ),
     window_days: int = Query(
         default=settings.metrics_default_window_days,
         ge=1,
@@ -111,7 +118,12 @@ async def read_storage_metrics(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     effective_tenant = (tenant_id or settings.default_tenant_id).strip()
-    return await get_storage_metrics(db, tenant_id=effective_tenant, window_days=window_days)
+    return await get_storage_metrics(
+        db,
+        tenant_id=effective_tenant,
+        window_days=window_days,
+        access_type=access_type,
+    )
 
 
 @router.get("/costs", response_model=CostMetricsResponse)

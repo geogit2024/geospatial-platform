@@ -4,9 +4,9 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -109,6 +109,7 @@ async def get_storage_metrics(
     *,
     tenant_id: str,
     window_days: int,
+    access_type: Literal["all", "download", "ogc"] = "all",
 ) -> dict[str, Any]:
     result = await db.execute(select(Image))
     images = list(result.scalars())
@@ -166,22 +167,55 @@ async def get_storage_metrics(
     top_files = sorted(image_stats, key=lambda item: item["size_bytes"], reverse=True)[: settings.metrics_top_files_limit]
 
     access_stmt = (
-        select(AssetAccessLog.image_id, func.count().label("access_count"))
+        select(
+            AssetAccessLog.image_id,
+            func.count().label("total_access_count"),
+            func.sum(case((AssetAccessLog.event_type == "download", 1), else_=0)).label("download_access_count"),
+            func.sum(case((AssetAccessLog.event_type != "download", 1), else_=0)).label("ogc_access_count"),
+            func.max(AssetAccessLog.created_at).label("last_access_at"),
+        )
         .where(AssetAccessLog.tenant_id == tenant_id)
         .where(AssetAccessLog.created_at >= recent_start)
         .group_by(AssetAccessLog.image_id)
-        .order_by(func.count().desc())
-        .limit(settings.metrics_top_files_limit)
     )
+    if access_type == "download":
+        access_stmt = access_stmt.having(
+            func.sum(case((AssetAccessLog.event_type == "download", 1), else_=0)) > 0
+        ).order_by(
+            func.sum(case((AssetAccessLog.event_type == "download", 1), else_=0)).desc(),
+            func.max(AssetAccessLog.created_at).desc(),
+        )
+    elif access_type == "ogc":
+        access_stmt = access_stmt.having(
+            func.sum(case((AssetAccessLog.event_type != "download", 1), else_=0)) > 0
+        ).order_by(
+            func.sum(case((AssetAccessLog.event_type != "download", 1), else_=0)).desc(),
+            func.max(AssetAccessLog.created_at).desc(),
+        )
+    else:
+        access_stmt = access_stmt.order_by(
+            func.count().desc(),
+            func.max(AssetAccessLog.created_at).desc(),
+        )
+    access_stmt = access_stmt.limit(settings.metrics_top_files_limit)
     access_rows = await db.execute(access_stmt)
     access_data = list(access_rows.all())
     image_lookup = {item["id"]: item for item in image_stats}
+
+    def _selected_access_count(row: Any) -> int:
+        if access_type == "download":
+            return int(row.download_access_count or 0)
+        if access_type == "ogc":
+            return int(row.ogc_access_count or 0)
+        return int(row.total_access_count or 0)
 
     top_accessed = [
         {
             "id": row.image_id,
             "filename": image_lookup.get(row.image_id, {}).get("filename", "unknown"),
-            "accesses": int(row.access_count),
+            "accesses": _selected_access_count(row),
+            "download_accesses": int(row.download_access_count or 0),
+            "ogc_accesses": int(row.ogc_access_count or 0),
         }
         for row in access_data
     ]
@@ -189,6 +223,7 @@ async def get_storage_metrics(
     return {
         "tenant_id": tenant_id,
         "window_days": window_days,
+        "access_type": access_type,
         "total_files": total_files,
         "total_size_gb": round(bytes_to_gb(total_size_bytes), 4),
         "avg_size_mb": round(avg_size_mb, 2),
