@@ -94,34 +94,38 @@ def _run_daily_cost_query(*, table_id: str, start: date, end: date, project_id: 
           OR LOWER(project.name) = LOWER(@project_id)
         )
     ),
+    categorized AS (
+      SELECT
+        day,
+        net_cost,
+        currency,
+        CASE
+          WHEN REGEXP_CONTAINS(sku_desc, r'download|egress|internet|data transfer|outbound')
+            OR REGEXP_CONTAINS(service_desc, r'network')
+          THEN 'download'
+          WHEN REGEXP_CONTAINS(sku_desc, r'gibibyte month|byte-seconds|snapshot|capacity|at rest|archive|storage')
+          THEN 'storage'
+          ELSE 'processing'
+        END AS cost_type
+      FROM line_items
+    ),
     daily AS (
       SELECT
         day,
         SUM(net_cost) AS total_cost,
-        SUM(
-          CASE
-            WHEN REGEXP_CONTAINS(service_desc, r'storage')
-              OR REGEXP_CONTAINS(sku_desc, r'storage|gibibyte month|byte-seconds|snapshot')
-            THEN net_cost ELSE 0
-          END
-        ) AS storage_cost,
-        SUM(
-          CASE
-            WHEN REGEXP_CONTAINS(sku_desc, r'download|egress|internet')
-              OR REGEXP_CONTAINS(service_desc, r'network')
-            THEN net_cost ELSE 0
-          END
-        ) AS download_cost,
+        SUM(CASE WHEN cost_type = 'storage' THEN net_cost ELSE 0 END) AS storage_cost,
+        SUM(CASE WHEN cost_type = 'processing' THEN net_cost ELSE 0 END) AS processing_cost,
+        SUM(CASE WHEN cost_type = 'download' THEN net_cost ELSE 0 END) AS download_cost,
         ANY_VALUE(currency) AS currency
-      FROM line_items
+      FROM categorized
       GROUP BY day
     )
     SELECT
       FORMAT_DATE('%Y-%m-%d', day) AS date,
       ROUND(total_cost, 6) AS total_cost,
       ROUND(storage_cost, 6) AS storage_cost,
+      ROUND(processing_cost, 6) AS processing_cost,
       ROUND(download_cost, 6) AS download_cost,
-      ROUND(total_cost - storage_cost - download_cost, 6) AS processing_cost,
       currency
     FROM daily
     ORDER BY day
