@@ -7,10 +7,10 @@ from routers.services import _vector_default_style_name
 
 
 def test_vector_default_style_polygon_like() -> None:
-    assert _vector_default_style_name("POLYGON") == "polygon"
-    assert _vector_default_style_name("MULTIPOLYGON") == "polygon"
-    assert _vector_default_style_name("GEOMETRY") == "polygon"
-    assert _vector_default_style_name(None) == "polygon"
+    assert _vector_default_style_name("POLYGON") == "line"
+    assert _vector_default_style_name("MULTIPOLYGON") == "line"
+    assert _vector_default_style_name("GEOMETRY") == "line"
+    assert _vector_default_style_name(None) == "line"
 
 
 def test_vector_default_style_line_like() -> None:

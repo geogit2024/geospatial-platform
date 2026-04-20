@@ -159,8 +159,10 @@ def _vector_default_style_name(geometry_type: str | None) -> str:
         return "line"
     if "POINT" in gt:
         return "point"
-    # Fallback to polygon for POLYGON/MULTIPOLYGON and generic GEOMETRY columns.
-    return "polygon"
+    # For polygons, prefer outline-only rendering to avoid masking basemaps.
+    # This also handles generic GEOMETRY columns commonly used by mixed
+    # POLYGON/MULTIPOLYGON datasets.
+    return "line"
 
 
 async def _get_published_image(image_id: str, db: AsyncSession) -> Image:
