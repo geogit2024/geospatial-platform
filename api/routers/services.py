@@ -1,5 +1,6 @@
 import httpx
 import math
+import logging
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,10 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database import get_db
-from models import Image, ProcessingStatus
+from models import AssetAccessLog, Image, ProcessingStatus
 
 router = APIRouter(prefix="/services", tags=["ogc-services"])
 settings = get_settings()
+log = logging.getLogger("api.services")
+_EVENT_TYPE_MAX_LENGTH = 32
 
 
 def _header_first_value(request: Request, header_name: str) -> str | None:
@@ -148,6 +151,36 @@ def _build_proxy_response(upstream: httpx.Response) -> Response:
         if v:
             headers[h] = v
     return Response(content=upstream.content, status_code=upstream.status_code, headers=headers)
+
+
+def _normalize_event_token(value: str | None, *, fallback: str) -> str:
+    token = "".join(ch.lower() if ch.isalnum() else "_" for ch in (value or ""))
+    token = token.strip("_")
+    while "__" in token:
+        token = token.replace("__", "_")
+    return token or fallback
+
+
+def _build_ogc_event_type(service: str, request_name: str | None, *, fallback_request: str) -> str:
+    service_token = _normalize_event_token(service, fallback=service.lower())
+    request_token = _normalize_event_token(request_name, fallback=fallback_request.lower())
+    max_request_length = max(1, _EVENT_TYPE_MAX_LENGTH - len(service_token) - 1)
+    return f"{service_token}_{request_token[:max_request_length]}"
+
+
+async def _register_access_log(db: AsyncSession, image: Image, event_type: str) -> None:
+    try:
+        db.add(
+            AssetAccessLog(
+                tenant_id=image.tenant_id or settings.default_tenant_id,
+                image_id=image.id,
+                event_type=(event_type or "view")[:_EVENT_TYPE_MAX_LENGTH],
+            )
+        )
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        log.warning("Failed to register service access log for image %s (%s): %s", image.id, event_type, exc)
 
 
 def _vector_default_style_name(geometry_type: str | None) -> str:
@@ -320,6 +353,11 @@ async def get_ogc_services(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     image = await _get_published_image(image_id, db)
+    await _register_access_log(
+        db,
+        image,
+        _build_ogc_event_type("ogc", "discovery", fallback_request="discovery"),
+    )
     # WMS must be image-specific so clients (ArcGIS) see only this layer.
     wms = _public_ogc_urls(request, image.id)["wms"]
     wfs = _public_ogc_urls(request, image.id)["wfs"]
@@ -396,6 +434,11 @@ async def wms_proxy(
     params.setdefault("format", "image/png")
     params.setdefault("transparent", "true")
     request_name = str(params.get("request", "")).lower()
+    await _register_access_log(
+        db,
+        image,
+        _build_ogc_event_type("wms", request_name, fallback_request="getcapabilities"),
+    )
     if request_name in ("getmap", "getfeatureinfo"):
         # This proxy endpoint is image-specific; always pin layer to avoid
         # client-side mismatches (e.g. ArcGIS using layer Title as Name).
@@ -516,10 +559,19 @@ async def wmts_proxy(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    await _get_published_image(image_id, db)
+    image = await _get_published_image(image_id, db)
     wmts_endpoint = f"{settings.geoserver_url.rstrip('/')}/gwc/service/wmts"
     params = dict(request.query_params)
     params.setdefault("REQUEST", "GetCapabilities")
+    await _register_access_log(
+        db,
+        image,
+        _build_ogc_event_type(
+            "wmts",
+            params.get("REQUEST") or params.get("request"),
+            fallback_request="getcapabilities",
+        ),
+    )
     return await _proxy_get(wmts_endpoint, params)
 
 
@@ -537,6 +589,11 @@ async def wfs_proxy(
     params.setdefault("version", "2.0.0")
     params.setdefault("request", "GetCapabilities")
     request_name = str(params.get("request", "")).lower()
+    await _register_access_log(
+        db,
+        image,
+        _build_ogc_event_type("wfs", request_name, fallback_request="getcapabilities"),
+    )
     if request_name == "getfeature":
         params.setdefault("typenames", image.layer_name)
     return await _proxy_get(wfs_endpoint, params)
@@ -548,7 +605,7 @@ async def wcs_proxy(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> Response:
-    await _get_published_image(image_id, db)
+    image = await _get_published_image(image_id, db)
     wcs_endpoint = (
         f"{settings.geoserver_url.rstrip('/')}/{settings.geoserver_workspace}/wcs"
     )
@@ -556,4 +613,13 @@ async def wcs_proxy(
     params.setdefault("service", "WCS")
     params.setdefault("version", "2.0.1")
     params.setdefault("request", "GetCapabilities")
+    await _register_access_log(
+        db,
+        image,
+        _build_ogc_event_type(
+            "wcs",
+            params.get("request") or params.get("REQUEST"),
+            fallback_request="getcapabilities",
+        ),
+    )
     return await _proxy_get(wcs_endpoint, params)

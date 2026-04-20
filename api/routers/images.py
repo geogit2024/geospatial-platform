@@ -159,7 +159,7 @@ async def get_image_download_url(
     try:
         db.add(
             AssetAccessLog(
-                tenant_id=settings.default_tenant_id,
+                tenant_id=image.tenant_id or settings.default_tenant_id,
                 image_id=image.id,
                 event_type="download",
             )
