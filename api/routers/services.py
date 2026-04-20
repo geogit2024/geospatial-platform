@@ -150,6 +150,19 @@ def _build_proxy_response(upstream: httpx.Response) -> Response:
     return Response(content=upstream.content, status_code=upstream.status_code, headers=headers)
 
 
+def _vector_default_style_name(geometry_type: str | None) -> str:
+    """
+    Pick a built-in GeoServer style for vector layers.
+    """
+    gt = (geometry_type or "").strip().upper()
+    if "LINE" in gt:
+        return "line"
+    if "POINT" in gt:
+        return "point"
+    # Fallback to polygon for POLYGON/MULTIPOLYGON and generic GEOMETRY columns.
+    return "polygon"
+
+
 async def _get_published_image(image_id: str, db: AsyncSession) -> Image:
     image = await db.get(Image, image_id)
     if not image:
@@ -386,6 +399,8 @@ async def wms_proxy(
         # client-side mismatches (e.g. ArcGIS using layer Title as Name).
         params["layers"] = image.layer_name
         is_vector = str(image.asset_kind or "").lower() == "vector"
+        if is_vector and not str(params.get("styles", "")).strip():
+            params["styles"] = _vector_default_style_name(image.geometry_type)
         if not is_vector and not str(params.get("styles", "")).strip():
             params["styles"] = "raster"
 
@@ -467,6 +482,8 @@ async def wms_proxy(
     elif request_name == "getlegendgraphic":
         params["layer"] = image.layer_name
         is_vector = str(image.asset_kind or "").lower() == "vector"
+        if is_vector and not str(params.get("style", "")).strip():
+            params["style"] = _vector_default_style_name(image.geometry_type)
         if not is_vector and not str(params.get("style", "")).strip():
             params["style"] = "raster"
     proxied = await _proxy_get(wms_endpoint, params)
