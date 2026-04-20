@@ -204,9 +204,28 @@ def _filter_wms_capabilities_to_layer(xml_text: str, layer_name: str) -> str:
     # GeoServer keeps aggregate CRS/BBOX at parent layer level. For single-layer
     # capabilities (used by ArcGIS), keep parent metadata aligned with the target
     # child extent to avoid clients requesting tiles from unrelated extents.
+    #
+    # Important: keep existing parent CRS/SRS entries (often includes EPSG:3857),
+    # otherwise ArcGIS can mark the service as incompatible with WebMercator
+    # basemaps.
+    parent_crs_values: set[tuple[str, str]] = set()
+    for tag in ("w:CRS", "w:SRS"):
+        for elem in capability_layer.findall(tag, ns):
+            value = (elem.text or "").strip()
+            if value:
+                parent_crs_values.add((tag, value))
+
+    for tag in ("w:CRS", "w:SRS"):
+        for elem in kept_layer.findall(tag, ns):
+            value = (elem.text or "").strip()
+            key = (tag, value)
+            if not value or key in parent_crs_values:
+                continue
+            capability_layer.insert(0, deepcopy(elem))
+            parent_crs_values.add(key)
+
+    # Replace only parent extent metadata with the target layer extents.
     for tag in (
-        "w:CRS",
-        "w:SRS",
         "w:EX_GeographicBoundingBox",
         "w:LatLonBoundingBox",
         "w:BoundingBox",
@@ -215,8 +234,6 @@ def _filter_wms_capabilities_to_layer(xml_text: str, layer_name: str) -> str:
             capability_layer.remove(elem)
 
     for tag in (
-        "w:CRS",
-        "w:SRS",
         "w:EX_GeographicBoundingBox",
         "w:LatLonBoundingBox",
         "w:BoundingBox",
