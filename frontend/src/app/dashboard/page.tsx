@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   RefreshCw,
@@ -75,6 +75,7 @@ export default function DashboardPage() {
   const [ogcLoading, setOgcLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const downloadingRef = useRef<string | null>(null);
   const currentUserEmail = useMemo(() => getCurrentUser()?.email.trim().toLowerCase() ?? null, []);
 
   const fetchImages = useCallback(async () => {
@@ -166,16 +167,24 @@ export default function DashboardPage() {
   };
 
   const handleDownloadRaw = async (img: ImageRecord) => {
+    if (downloadingRef.current === img.id) return;
+    downloadingRef.current = img.id;
     setDownloadingId(img.id);
     try {
       const data = await getImageDownloadUrl(img.id, "raw");
-      const popup = window.open(data.download_url, "_blank", "noopener,noreferrer");
-      if (!popup) {
-        window.location.href = data.download_url;
-      }
+      // Single download dispatch: avoid popup + fallback strategy that can trigger
+      // duplicate browser download attempts in some clients.
+      const link = document.createElement("a");
+      link.href = data.download_url;
+      link.rel = "noopener noreferrer";
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : "Erro ao gerar download");
     } finally {
+      downloadingRef.current = null;
       setDownloadingId(null);
     }
   };
