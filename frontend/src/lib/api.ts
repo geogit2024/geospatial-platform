@@ -120,6 +120,58 @@ export interface CostSimulationResponse {
   new_estimated_total: number;
 }
 
+export interface UploadCostEstimateStatusItem {
+  status: string;
+  count: number;
+}
+
+export interface UploadCostEstimateAuditSession {
+  session_id: string;
+  status: string;
+  filename: string;
+  asset_type: string;
+  size_gb: number;
+  expected_monthly_downloads: number;
+  first_month_total: number;
+  recurring_monthly_total: number;
+  currency: string;
+  created_at: string | null;
+  accepted_at: string | null;
+  expires_at: string | null;
+}
+
+export interface UploadCostEstimateAuditResponse {
+  tenant_id: string;
+  window_days: number;
+  totals: {
+    sessions: number;
+    estimated: number;
+    accepted: number;
+    consumed: number;
+    expired_total: number;
+  };
+  rates: {
+    acceptance_rate_pct: number;
+    conversion_to_upload_pct: number;
+  };
+  accepted_averages: {
+    currency: string;
+    first_month_total: number;
+    recurring_monthly_total: number;
+  };
+  status_breakdown: UploadCostEstimateStatusItem[];
+  recent_sessions: UploadCostEstimateAuditSession[];
+}
+
+export interface UploadCostEstimateCleanupResponse {
+  tenant_id: string;
+  deleted_count: number;
+  limit: number;
+  executed_at: string;
+  oldest_expires_at: string | null;
+  newest_expires_at: string | null;
+}
+
 export interface ImageDownloadUrlResponse {
   image_id: string;
   source: "raw" | "processed";
@@ -127,6 +179,100 @@ export interface ImageDownloadUrlResponse {
   object_key: string;
   download_url: string;
   expires_in_seconds: number;
+}
+
+export interface UploadCostEstimateAssumptions {
+  expected_monthly_downloads: number;
+  avg_download_size_ratio: number;
+  processed_size_ratio_raster: number;
+  processed_size_ratio_vector: number;
+  processing_base_units: number;
+  processing_units_per_gb_raster: number;
+  processing_units_per_gb_vector: number;
+  uncertainty_min_factor: number;
+  uncertainty_max_factor: number;
+}
+
+export interface UploadCostEstimateConfigResponse {
+  tenant_id: string;
+  is_enabled: boolean;
+  assumptions: UploadCostEstimateAssumptions;
+  source: string;
+}
+
+export interface UploadCostEstimateAnalysis {
+  filename: string;
+  extension: string;
+  asset_type: "raster" | "vector";
+  size_bytes: number;
+  size_gb: number;
+  complexity_factor: number;
+  analysis_mode: string;
+}
+
+export interface UploadCostEstimate {
+  currency: string;
+  analysis_snapshot: {
+    asset_type: "raster" | "vector";
+    size_gb: number;
+    complexity_factor: number;
+  };
+  assumptions_used: {
+    expected_monthly_downloads: number;
+    avg_download_size_ratio: number;
+    processed_size_ratio: number;
+  };
+  breakdown: {
+    processing_one_time: number;
+    storage_monthly: number;
+    publication_monthly: number;
+    recurring_monthly_total: number;
+    first_month_total: number;
+    first_month_range: {
+      minimum: number;
+      likely: number;
+      maximum: number;
+    };
+  };
+  resource_projection: {
+    raw_storage_gb: number;
+    processed_storage_gb: number;
+    total_storage_gb: number;
+    processing_units: number;
+  };
+}
+
+export interface UploadCostEstimateStartResponse {
+  session_id: string;
+  tenant_id: string;
+  expires_at: string;
+  feature_enabled: boolean;
+  analysis: UploadCostEstimateAnalysis;
+  estimate: UploadCostEstimate;
+  temp_upload: {
+    bucket: string;
+    object_key: string;
+    upload_url: string;
+    expires_in: number;
+  };
+}
+
+export interface UploadCostEstimateCalculateResponse {
+  session_id: string;
+  tenant_id: string;
+  expires_at: string;
+  analysis: UploadCostEstimateAnalysis;
+  estimate: UploadCostEstimate;
+}
+
+export interface UploadCostEstimateAcceptResponse {
+  session_id: string;
+  tenant_id: string;
+  status: string;
+  accepted_at: string;
+  expires_at: string;
+  analysis: UploadCostEstimateAnalysis;
+  estimate: UploadCostEstimate;
 }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -197,6 +343,32 @@ export async function simulateCostMetrics(input: {
   });
 }
 
+export async function getUploadCostEstimateAudit(
+  windowDays = 30,
+  tenantId?: string,
+  limit = 20
+): Promise<UploadCostEstimateAuditResponse> {
+  const query = new URLSearchParams({
+    window_days: String(windowDays),
+    limit: String(limit),
+  });
+  if (tenantId) query.set("tenant_id", tenantId);
+  return req<UploadCostEstimateAuditResponse>(`/api/metrics/upload-cost-estimates?${query.toString()}`);
+}
+
+export async function cleanupUploadCostEstimateSessions(input?: {
+  tenant_id?: string;
+  limit?: number;
+}): Promise<UploadCostEstimateCleanupResponse> {
+  return req<UploadCostEstimateCleanupResponse>("/api/metrics/upload-cost-estimates/cleanup", {
+    method: "POST",
+    body: JSON.stringify({
+      tenant_id: input?.tenant_id,
+      limit: input?.limit ?? 500,
+    }),
+  });
+}
+
 export async function requestSignedUrl(
   filename: string,
   contentType: string,
@@ -230,10 +402,67 @@ export async function uploadFileDirect(
   });
 }
 
-export async function confirmUpload(imageId: string): Promise<void> {
+export async function confirmUpload(imageId: string, estimateSessionId?: string): Promise<void> {
   await req("/api/upload/confirm", {
     method: "POST",
-    body: JSON.stringify({ image_id: imageId }),
+    body: JSON.stringify({
+      image_id: imageId,
+      estimate_session_id: estimateSessionId,
+    }),
+  });
+}
+
+export async function getUploadCostEstimateConfig(
+  tenantId?: string
+): Promise<UploadCostEstimateConfigResponse> {
+  const query = tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : "";
+  return req<UploadCostEstimateConfigResponse>(`/api/upload/cost-estimate/config${query}`);
+}
+
+export async function startUploadCostEstimate(input: {
+  filename: string;
+  sizeBytes: number;
+  contentType: string;
+  tenantId?: string;
+}): Promise<UploadCostEstimateStartResponse> {
+  return req<UploadCostEstimateStartResponse>("/api/upload/cost-estimate/start", {
+    method: "POST",
+    body: JSON.stringify({
+      filename: input.filename,
+      size_bytes: input.sizeBytes,
+      content_type: input.contentType,
+      tenant_id: input.tenantId,
+    }),
+  });
+}
+
+export async function recalculateUploadCostEstimate(input: {
+  sessionId: string;
+  expectedMonthlyDownloads?: number;
+  avgDownloadSizeRatio?: number;
+}): Promise<UploadCostEstimateCalculateResponse> {
+  return req<UploadCostEstimateCalculateResponse>("/api/upload/cost-estimate/calculate", {
+    method: "POST",
+    body: JSON.stringify({
+      session_id: input.sessionId,
+      expected_monthly_downloads: input.expectedMonthlyDownloads,
+      avg_download_size_ratio: input.avgDownloadSizeRatio,
+    }),
+  });
+}
+
+export async function acceptUploadCostEstimate(input: {
+  sessionId: string;
+  expectedMonthlyDownloads?: number;
+  avgDownloadSizeRatio?: number;
+}): Promise<UploadCostEstimateAcceptResponse> {
+  return req<UploadCostEstimateAcceptResponse>("/api/upload/cost-estimate/accept", {
+    method: "POST",
+    body: JSON.stringify({
+      session_id: input.sessionId,
+      expected_monthly_downloads: input.expectedMonthlyDownloads,
+      avg_download_size_ratio: input.avgDownloadSizeRatio,
+    }),
   });
 }
 

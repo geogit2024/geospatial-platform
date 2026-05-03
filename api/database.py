@@ -38,6 +38,20 @@ async def _apply_schema_compatibility_updates(conn) -> None:
             """
             CREATE INDEX IF NOT EXISTS ix_images_tenant_id ON images (tenant_id);
             """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_images_created_at_desc ON images (created_at DESC);
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_images_status_created_at_desc ON images (status, created_at DESC);
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_images_status_updated_at
+            ON images (status, updated_at);
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_images_tenant_status_created_at_desc
+            ON images (tenant_id, status, created_at DESC);
+            """,
             "ALTER TABLE images ADD COLUMN IF NOT EXISTS wfs_url TEXT;",
             "ALTER TABLE images ADD COLUMN IF NOT EXISTS asset_kind VARCHAR(32);",
             "ALTER TABLE images ADD COLUMN IF NOT EXISTS source_format VARCHAR(64);",
@@ -45,6 +59,19 @@ async def _apply_schema_compatibility_updates(conn) -> None:
             "ALTER TABLE images ADD COLUMN IF NOT EXISTS workspace VARCHAR(128);",
             "ALTER TABLE images ADD COLUMN IF NOT EXISTS datastore VARCHAR(128);",
             "ALTER TABLE images ADD COLUMN IF NOT EXISTS postgis_table VARCHAR(128);",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_strategy VARCHAR(64);",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS worker_type VARCHAR(64);",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_queue VARCHAR(128);",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS requires_gdal BOOLEAN;",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS requires_postgis BOOLEAN;",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS requires_geoserver BOOLEAN;",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMP;",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_finished_at TIMESTAMP;",
+            "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_duration_seconds FLOAT;",
+            """
+            CREATE INDEX IF NOT EXISTS ix_images_processing_strategy_created_at
+            ON images (processing_strategy, created_at DESC);
+            """,
             """
             CREATE TABLE IF NOT EXISTS layers_metadata (
                 id VARCHAR(36) PRIMARY KEY,
@@ -63,6 +90,30 @@ async def _apply_schema_compatibility_updates(conn) -> None:
             );
             """,
             "CREATE INDEX IF NOT EXISTS ix_layers_metadata_image_id ON layers_metadata (image_id);",
+            """
+            CREATE INDEX IF NOT EXISTS ix_asset_access_logs_tenant_created_at
+            ON asset_access_logs (tenant_id, created_at DESC);
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_asset_access_logs_tenant_event_created_at
+            ON asset_access_logs (tenant_id, event_type, created_at DESC);
+            """,
+            """
+            ALTER TABLE IF EXISTS upload_cost_estimate_sessions
+            ADD COLUMN IF NOT EXISTS accepted_estimate_json TEXT;
+            """,
+            """
+            ALTER TABLE IF EXISTS upload_cost_estimate_sessions
+            ADD COLUMN IF NOT EXISTS accepted_input_json TEXT;
+            """,
+            """
+            ALTER TABLE IF EXISTS upload_cost_estimate_sessions
+            ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMP;
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_upload_cost_estimate_sessions_tenant_status_expires
+            ON upload_cost_estimate_sessions (tenant_id, status, expires_at);
+            """,
         ]
         for statement in statements:
             await conn.execute(text(statement))

@@ -1,3 +1,5 @@
+import asyncio
+import time
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,10 +10,20 @@ from config import get_settings
 from database import get_db
 from services.gcp_billing import BillingExportConfigError
 from services.metrics_costs import get_cost_metrics, simulate_costs
+from services.metrics_upload_cost_estimates import (
+    cleanup_expired_upload_cost_estimate_sessions,
+    get_upload_cost_estimate_audit,
+)
 from services.metrics_storage import get_storage_metrics
 
 router = APIRouter(prefix="/metrics", tags=["metrics"])
 settings = get_settings()
+_storage_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_cost_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_upload_cost_estimate_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_storage_cache_lock = asyncio.Lock()
+_cost_cache_lock = asyncio.Lock()
+_upload_cost_estimate_cache_lock = asyncio.Lock()
 
 
 class DistributionItem(BaseModel):
@@ -102,6 +114,154 @@ class CostSimulationResponse(BaseModel):
     new_estimated_total: float
 
 
+class UploadCostEstimateStatusItem(BaseModel):
+    status: str
+    count: int
+
+
+class UploadCostEstimateSessionItem(BaseModel):
+    session_id: str
+    status: str
+    filename: str
+    asset_type: str
+    size_gb: float
+    expected_monthly_downloads: int
+    first_month_total: float
+    recurring_monthly_total: float
+    currency: str
+    created_at: str | None = None
+    accepted_at: str | None = None
+    expires_at: str | None = None
+
+
+class UploadCostEstimateAuditResponse(BaseModel):
+    tenant_id: str
+    window_days: int
+    totals: dict[str, int]
+    rates: dict[str, float]
+    accepted_averages: dict[str, Any]
+    status_breakdown: list[UploadCostEstimateStatusItem]
+    recent_sessions: list[UploadCostEstimateSessionItem]
+
+
+class UploadCostEstimateCleanupRequest(BaseModel):
+    tenant_id: str | None = None
+    limit: int = Field(default=500, ge=1, le=2000)
+
+
+class UploadCostEstimateCleanupResponse(BaseModel):
+    tenant_id: str
+    deleted_count: int
+    limit: int
+    executed_at: str
+    oldest_expires_at: str | None = None
+    newest_expires_at: str | None = None
+
+
+def _cache_deadline(ttl_seconds: int) -> float:
+    ttl = max(int(ttl_seconds), 1)
+    return time.monotonic() + ttl
+
+
+def _storage_cache_key(*, tenant_id: str, access_type: str, window_days: int) -> str:
+    return f"{tenant_id}|{access_type}|{window_days}"
+
+
+def _cost_cache_key(*, tenant_id: str, window_days: int) -> str:
+    return f"{tenant_id}|{window_days}"
+
+
+def _upload_cost_estimate_cache_key(*, tenant_id: str, window_days: int, limit: int) -> str:
+    return f"{tenant_id}|{window_days}|{limit}"
+
+
+async def _get_cached_storage_metrics(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    access_type: Literal["all", "download", "ogc"],
+    window_days: int,
+) -> dict[str, Any]:
+    key = _storage_cache_key(tenant_id=tenant_id, access_type=access_type, window_days=window_days)
+    now = time.monotonic()
+    entry = _storage_cache.get(key)
+    if entry and entry[0] > now:
+        return entry[1]
+
+    async with _storage_cache_lock:
+        entry = _storage_cache.get(key)
+        if entry and entry[0] > time.monotonic():
+            return entry[1]
+
+        payload = await get_storage_metrics(
+            db,
+            tenant_id=tenant_id,
+            window_days=window_days,
+            access_type=access_type,
+        )
+        _storage_cache[key] = (
+            _cache_deadline(settings.metrics_storage_cache_ttl_seconds),
+            payload,
+        )
+        return payload
+
+
+async def _get_cached_cost_metrics(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    window_days: int,
+) -> dict[str, Any]:
+    key = _cost_cache_key(tenant_id=tenant_id, window_days=window_days)
+    now = time.monotonic()
+    entry = _cost_cache.get(key)
+    if entry and entry[0] > now:
+        return entry[1]
+
+    async with _cost_cache_lock:
+        entry = _cost_cache.get(key)
+        if entry and entry[0] > time.monotonic():
+            return entry[1]
+
+        payload = await get_cost_metrics(db, tenant_id=tenant_id, window_days=window_days)
+        _cost_cache[key] = (
+            _cache_deadline(settings.metrics_cost_cache_ttl_seconds),
+            payload,
+        )
+        return payload
+
+
+async def _get_cached_upload_cost_estimate_audit(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    window_days: int,
+    limit: int,
+) -> dict[str, Any]:
+    key = _upload_cost_estimate_cache_key(tenant_id=tenant_id, window_days=window_days, limit=limit)
+    now = time.monotonic()
+    entry = _upload_cost_estimate_cache.get(key)
+    if entry and entry[0] > now:
+        return entry[1]
+
+    async with _upload_cost_estimate_cache_lock:
+        entry = _upload_cost_estimate_cache.get(key)
+        if entry and entry[0] > time.monotonic():
+            return entry[1]
+
+        payload = await get_upload_cost_estimate_audit(
+            db,
+            tenant_id=tenant_id,
+            window_days=window_days,
+            limit=limit,
+        )
+        _upload_cost_estimate_cache[key] = (
+            _cache_deadline(settings.metrics_storage_cache_ttl_seconds),
+            payload,
+        )
+        return payload
+
+
 @router.get("/storage", response_model=StorageMetricsResponse)
 async def read_storage_metrics(
     tenant_id: str | None = Query(default=None, description="Tenant external id"),
@@ -118,7 +278,7 @@ async def read_storage_metrics(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     effective_tenant = (tenant_id or settings.default_tenant_id).strip()
-    return await get_storage_metrics(
+    return await _get_cached_storage_metrics(
         db,
         tenant_id=effective_tenant,
         window_days=window_days,
@@ -139,7 +299,11 @@ async def read_cost_metrics(
 ) -> dict[str, Any]:
     effective_tenant = (tenant_id or settings.default_tenant_id).strip()
     try:
-        return await get_cost_metrics(db, tenant_id=effective_tenant, window_days=window_days)
+        return await _get_cached_cost_metrics(
+            db,
+            tenant_id=effective_tenant,
+            window_days=window_days,
+        )
     except BillingExportConfigError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -154,7 +318,11 @@ async def simulate_cost_metrics(
 ) -> dict[str, Any]:
     effective_tenant = (payload.tenant_id or settings.default_tenant_id).strip()
     try:
-        current = await get_cost_metrics(db, tenant_id=effective_tenant, window_days=payload.window_days)
+        current = await _get_cached_cost_metrics(
+            db,
+            tenant_id=effective_tenant,
+            window_days=payload.window_days,
+        )
     except BillingExportConfigError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -177,3 +345,50 @@ async def simulate_cost_metrics(
         "current_estimated_total": float(current["estimated_total"]),
         **simulation,
     }
+
+
+@router.get("/upload-cost-estimates", response_model=UploadCostEstimateAuditResponse)
+async def read_upload_cost_estimate_audit(
+    tenant_id: str | None = Query(default=None, description="Tenant external id"),
+    window_days: int = Query(
+        default=settings.metrics_default_window_days,
+        ge=1,
+        le=settings.metrics_max_window_days,
+        description="Window size in days for estimate audit aggregation",
+    ),
+    limit: int = Query(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum number of recent sessions in response",
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    effective_tenant = (tenant_id or settings.default_tenant_id).strip()
+    return await _get_cached_upload_cost_estimate_audit(
+        db,
+        tenant_id=effective_tenant,
+        window_days=window_days,
+        limit=limit,
+    )
+
+
+@router.post("/upload-cost-estimates/cleanup", response_model=UploadCostEstimateCleanupResponse)
+async def cleanup_upload_cost_estimates(
+    payload: UploadCostEstimateCleanupRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    effective_tenant = (payload.tenant_id or settings.default_tenant_id).strip()
+    response = await cleanup_expired_upload_cost_estimate_sessions(
+        db,
+        tenant_id=effective_tenant,
+        limit=payload.limit,
+    )
+
+    # Keep dashboard metrics coherent immediately after cleanup.
+    async with _upload_cost_estimate_cache_lock:
+        keys = [key for key in _upload_cost_estimate_cache if key.startswith(f"{effective_tenant}|")]
+        for key in keys:
+            _upload_cost_estimate_cache.pop(key, None)
+
+    return response

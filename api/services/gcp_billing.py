@@ -100,8 +100,7 @@ def _run_daily_cost_query(*, table_id: str, start: date, end: date, project_id: 
         net_cost,
         currency,
         CASE
-          WHEN REGEXP_CONTAINS(sku_desc, r'download|egress|internet|data transfer|outbound')
-            OR REGEXP_CONTAINS(service_desc, r'network')
+          WHEN REGEXP_CONTAINS(sku_desc, r'(^|[^a-z])download([^a-z]|$)')
           THEN 'download'
           WHEN REGEXP_CONTAINS(sku_desc, r'gibibyte month|byte-seconds|snapshot|capacity|at rest|archive|storage')
           THEN 'storage'
@@ -146,6 +145,65 @@ def _run_daily_cost_query(*, table_id: str, start: date, end: date, project_id: 
 
     rows = client.query(query, job_config=job_config).result()
     return [dict(row.items()) for row in rows]
+
+
+def _run_storage_unit_cost_query(*, table_id: str, start: date, end: date, project_id: str) -> float | None:
+    try:
+        from google.cloud import bigquery
+    except Exception as exc:  # pragma: no cover - dependency/runtime variation
+        raise BillingExportConfigError(
+            "google-cloud-bigquery nao disponivel. Instale a dependencia no servico da API."
+        ) from exc
+
+    query = f"""
+    WITH storage_usage AS (
+      SELECT
+        SUM(CAST(usage.amount AS NUMERIC)) AS byte_seconds,
+        SUM(
+          CAST(cost AS NUMERIC)
+          + IFNULL((SELECT SUM(CAST(c.amount AS NUMERIC)) FROM UNNEST(credits) c), 0)
+        ) AS net_cost
+      FROM `{table_id}`
+      WHERE DATE(usage_start_time) BETWEEN @start_date AND @end_date
+        AND (
+          @project_id = ''
+          OR project.id = @project_id
+          OR CAST(project.number AS STRING) = @project_id
+          OR LOWER(project.name) = LOWER(@project_id)
+        )
+        AND LOWER(service.description) = 'cloud storage'
+        AND LOWER(usage.unit) = 'byte-seconds'
+        AND REGEXP_CONTAINS(LOWER(sku.description), r'storage')
+        AND NOT REGEXP_CONTAINS(LOWER(sku.description), r'operation|request|download|egress|transfer|replication')
+    )
+    SELECT
+      SAFE_DIVIDE(
+        net_cost,
+        SAFE_DIVIDE(byte_seconds, POW(1024, 3) * 30 * 24 * 60 * 60)
+      ) AS cost_per_gib_month
+    FROM storage_usage
+    """
+
+    client_kwargs: dict[str, Any] = {}
+    if settings.gcp_billing_export_project.strip():
+        client_kwargs["project"] = settings.gcp_billing_export_project.strip()
+
+    client = bigquery.Client(**client_kwargs)
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("start_date", "DATE", start.isoformat()),
+            bigquery.ScalarQueryParameter("end_date", "DATE", end.isoformat()),
+            bigquery.ScalarQueryParameter("project_id", "STRING", project_id),
+        ]
+    )
+
+    rows = list(client.query(query, job_config=job_config).result())
+    if not rows:
+        return None
+    value = rows[0].get("cost_per_gib_month")
+    if value is None:
+        return None
+    return _to_float(value)
 
 
 async def _run_daily_cost_query_with_fallback(
@@ -295,6 +353,22 @@ async def get_billing_cost_metrics_from_export(
         end=today,
         project_id=project_id,
     )
+    unit_cost_start = today - timedelta(days=29)
+    storage_unit_cost = await asyncio.to_thread(
+        _run_storage_unit_cost_query,
+        table_id=table_id,
+        start=unit_cost_start,
+        end=today,
+        project_id=project_id.strip(),
+    )
+    if storage_unit_cost is None and project_id.strip():
+        storage_unit_cost = await asyncio.to_thread(
+            _run_storage_unit_cost_query,
+            table_id=table_id,
+            start=unit_cost_start,
+            end=today,
+            project_id="",
+        )
 
     cost_timeseries, currency = _build_timeseries(
         rows_window,
@@ -328,6 +402,10 @@ async def get_billing_cost_metrics_from_export(
         "window_downloads": round(window_downloads, 6),
         "month_total": round(month_total, 2),
         "month_storage": round(month_storage, 2),
+        "storage_unit_cost_per_gb_month": round(
+            storage_unit_cost if storage_unit_cost is not None else settings.cost_per_gb_month,
+            6,
+        ),
         "projection_30_days": round(projection_30_days, 2),
         "cost_timeseries": cost_timeseries,
     }

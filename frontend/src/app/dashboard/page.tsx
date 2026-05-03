@@ -31,9 +31,12 @@ import { cn, STATUS_IS_ACTIVE, formatDate } from "@/lib/utils";
 import StatusBadge from "@/components/StatusBadge";
 import StorageMetrics from "@/components/metrics/StorageMetrics";
 import CostMetrics from "@/components/metrics/CostMetrics";
+import UploadCostEstimateMetrics from "@/components/metrics/UploadCostEstimateMetrics";
 import { getCurrentUser, getImageOwner } from "@/lib/auth";
 
-const POLL_MS = 5000;
+const POLL_MS_VISIBLE_IDLE = 30_000;
+const POLL_MS_VISIBLE_ACTIVE = 10_000;
+const POLL_MS_HIDDEN = 120_000;
 
 type DashboardTab = "layers" | "metrics";
 type LayersScopeTab = "mine" | "organization";
@@ -76,6 +79,7 @@ export default function DashboardPage() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const downloadingRef = useRef<string | null>(null);
+  const [isPageVisible, setIsPageVisible] = useState(true);
   const currentUserEmail = useMemo(() => getCurrentUser()?.email.trim().toLowerCase() ?? null, []);
 
   const fetchImages = useCallback(async () => {
@@ -91,10 +95,44 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    const updateVisibility = () => {
+      if (typeof document !== "undefined") {
+        setIsPageVisible(document.visibilityState === "visible");
+      }
+    };
+
+    updateVisibility();
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => document.removeEventListener("visibilitychange", updateVisibility);
+  }, []);
+
+  const pollIntervalMs = useMemo(() => {
+    if (!isPageVisible) return POLL_MS_HIDDEN;
+    const hasActiveImages = images.some((img) => STATUS_IS_ACTIVE[img.status]);
+    return hasActiveImages ? POLL_MS_VISIBLE_ACTIVE : POLL_MS_VISIBLE_IDLE;
+  }, [images, isPageVisible]);
+
+  useEffect(() => {
     fetchImages();
-    const id = setInterval(fetchImages, POLL_MS);
-    return () => clearInterval(id);
   }, [fetchImages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const loop = async () => {
+      if (cancelled) return;
+      await fetchImages();
+      if (cancelled) return;
+      timer = setTimeout(loop, pollIntervalMs);
+    };
+
+    timer = setTimeout(loop, pollIntervalMs);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [fetchImages, pollIntervalMs]);
 
   useEffect(() => {
     if (selected) {
@@ -279,6 +317,7 @@ export default function DashboardPage() {
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4">
           <StorageMetrics />
           <CostMetrics />
+          <UploadCostEstimateMetrics />
         </div>
       ) : (
         <div className="flex flex-1 min-h-0">

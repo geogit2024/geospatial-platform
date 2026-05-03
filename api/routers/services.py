@@ -1,6 +1,8 @@
+import asyncio
 import httpx
 import math
 import logging
+import random
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,13 +10,18 @@ from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
-from database import get_db
+from database import AsyncSessionLocal, get_db
 from models import AssetAccessLog, Image, ProcessingStatus
 
 router = APIRouter(prefix="/services", tags=["ogc-services"])
 settings = get_settings()
 log = logging.getLogger("api.services")
 _EVENT_TYPE_MAX_LENGTH = 32
+_ACCESS_LOG_QUEUE_MAXSIZE = 50000
+_HIGH_VOLUME_EVENT_TYPES = {"wms_getmap", "wms_getfeatureinfo", "wmts_gettile"}
+_access_log_queue: asyncio.Queue[tuple[str, str, str]] = asyncio.Queue(maxsize=_ACCESS_LOG_QUEUE_MAXSIZE)
+_access_log_worker_task: asyncio.Task[None] | None = None
+_access_log_worker_lock = asyncio.Lock()
 
 
 def _header_first_value(request: Request, header_name: str) -> str | None:
@@ -168,19 +175,94 @@ def _build_ogc_event_type(service: str, request_name: str | None, *, fallback_re
     return f"{service_token}_{request_token[:max_request_length]}"
 
 
-async def _register_access_log(db: AsyncSession, image: Image, event_type: str) -> None:
+def _should_sample_event(event_type: str) -> bool:
+    normalized = (event_type or "").strip().lower()
+    if normalized not in _HIGH_VOLUME_EVENT_TYPES:
+        return True
+
+    sample_rate = float(settings.ogc_access_log_sample_rate_high_volume)
+    if sample_rate <= 0.0:
+        return False
+    if sample_rate >= 1.0:
+        return True
+    return random.random() < sample_rate
+
+
+async def _flush_access_log_batch(batch: list[tuple[str, str, str]]) -> None:
+    if not batch:
+        return
+
     try:
-        db.add(
-            AssetAccessLog(
-                tenant_id=image.tenant_id or settings.default_tenant_id,
-                image_id=image.id,
-                event_type=(event_type or "view")[:_EVENT_TYPE_MAX_LENGTH],
+        async with AsyncSessionLocal() as session:
+            session.add_all(
+                AssetAccessLog(
+                    tenant_id=tenant_id,
+                    image_id=image_id,
+                    event_type=event_type,
+                )
+                for tenant_id, image_id, event_type in batch
+            )
+            await session.commit()
+    except Exception as exc:
+        log.warning("Failed to flush OGC access log batch (size=%d): %s", len(batch), exc)
+
+
+async def _access_log_worker_loop() -> None:
+    batch_size = max(int(settings.ogc_access_log_batch_size), 1)
+    flush_interval = max(int(settings.ogc_access_log_flush_interval_seconds), 1)
+
+    while True:
+        first = await _access_log_queue.get()
+        batch = [first]
+        deadline = asyncio.get_running_loop().time() + flush_interval
+
+        while len(batch) < batch_size:
+            timeout = deadline - asyncio.get_running_loop().time()
+            if timeout <= 0:
+                break
+            try:
+                batch.append(await asyncio.wait_for(_access_log_queue.get(), timeout))
+            except asyncio.TimeoutError:
+                break
+
+        await _flush_access_log_batch(batch)
+        for _ in batch:
+            _access_log_queue.task_done()
+
+
+async def _ensure_access_log_worker() -> None:
+    global _access_log_worker_task
+    if _access_log_worker_task and not _access_log_worker_task.done():
+        return
+
+    async with _access_log_worker_lock:
+        if _access_log_worker_task and not _access_log_worker_task.done():
+            return
+        _access_log_worker_task = asyncio.create_task(_access_log_worker_loop(), name="ogc-access-log-worker")
+
+
+async def _register_access_log(db: AsyncSession, image: Image, event_type: str) -> None:
+    _ = db  # The endpoint-level DB session is intentionally not used in this hot path.
+    normalized_event = (event_type or "view")[:_EVENT_TYPE_MAX_LENGTH]
+    if not _should_sample_event(normalized_event):
+        return
+
+    await _ensure_access_log_worker()
+    try:
+        _access_log_queue.put_nowait(
+            (
+                image.tenant_id or settings.default_tenant_id,
+                image.id,
+                normalized_event,
             )
         )
-        await db.commit()
-    except Exception as exc:
-        await db.rollback()
-        log.warning("Failed to register service access log for image %s (%s): %s", image.id, event_type, exc)
+    except asyncio.QueueFull:
+        log.warning(
+            "OGC access log queue full (max=%d). Dropping event '%s' for image %s",
+            _ACCESS_LOG_QUEUE_MAXSIZE,
+            normalized_event,
+            image.id,
+        )
 
 
 def _vector_default_style_name(geometry_type: str | None) -> str:

@@ -122,15 +122,30 @@ async def get_cost_metrics(
 
         storage_cost_month = float(billing["month_storage"])
         processing_cost = float(billing["window_processing"])
-        download_cost = float(billing["window_downloads"])
+        pricing = await _resolve_pricing(db, tenant_id)
+        download_cost = calculate_download_cost(download_count, pricing["cost_per_download"])
         estimated_total = float(billing["month_total"])
         projection_30_days = float(billing["projection_30_days"])
         cost_timeseries = billing["cost_timeseries"]
         currency = str(billing["currency"])
 
-        cost_per_gb_month = (storage_cost_month / total_size_gb) if total_size_gb > 0 else 0.0
+        cost_per_gb_month = float(
+            billing.get("storage_unit_cost_per_gb_month") or settings.cost_per_gb_month
+        )
         cost_per_process = (processing_cost / process_count) if process_count > 0 else 0.0
-        cost_per_download = (download_cost / download_count) if download_count > 0 else 0.0
+        cost_per_download = float(pricing["cost_per_download"])
+
+        downloads_by_day = await _downloads_by_day(db, tenant_id, start)
+        cost_timeseries = [
+            {
+                **item,
+                "downloads": round(
+                    downloads_by_day.get(date.fromisoformat(item["date"]), 0) * cost_per_download,
+                    4,
+                ),
+            }
+            for item in cost_timeseries
+        ]
     else:
         pricing = await _resolve_pricing(db, tenant_id)
 

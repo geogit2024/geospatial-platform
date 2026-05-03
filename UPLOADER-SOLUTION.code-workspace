@@ -1,0 +1,92 @@
+{
+  "folders": [
+    {
+      "name": "UPLOADER-SOLUTION",
+      "path": "."
+    },
+    {
+      "name": "API",
+      "path": "api"
+    },
+    {
+      "name": "Worker",
+      "path": "worker"
+    },
+    {
+      "name": "Frontend",
+      "path": "frontend"
+    },
+    {
+      "name": "GeoServer",
+      "path": "geoserver"
+    },
+    {
+      "name": "MinIO",
+      "path": "minio"
+    }
+  ],
+  "settings": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "files.eol": "\n",
+    "terminal.integrated.defaultProfile.windows": "PowerShell",
+    "python.defaultInterpreterPath": "${workspaceFolder:UPLOADER-SOLUTION}\\.venv\\Scripts\\python.exe",
+    "python.venvPath": "${workspaceFolder:UPLOADER-SOLUTION}",
+    "python.envFile": "${workspaceFolder:UPLOADER-SOLUTION}\\.env",
+    "python.analysis.extraPaths": [
+      "${workspaceFolder:UPLOADER-SOLUTION}\\api",
+      "${workspaceFolder:UPLOADER-SOLUTION}\\worker"
+    ],
+    "python.analysis.typeCheckingMode": "basic",
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestArgs": [
+      "tests"
+    ],
+    "eslint.workingDirectories": [
+      {
+        "directory": "frontend",
+        "changeProcessCWD": true
+      }
+    ],
+    "search.exclude": {
+      "**/__pycache__": true,
+      "**/*.pyc": true,
+      "**/.pytest_cache": true,
+      "**/.mypy_cache": true,
+      "**/.ruff_cache": true,
+      "**/node_modules": true,
+      "**/.next": true,
+      "**/dist": true,
+      "**/build": true,
+      "**/.git": true
+    },
+    "files.exclude": {
+      "**/__pycache__": true,
+      "**/*.pyc": true,
+      "**/.pytest_cache": true,
+      "**/.mypy_cache": true,
+      "**/.ruff_cache": true,
+      "**/.next": true,
+      "**/dist": true,
+      "**/build": true
+    },
+    "files.watcherExclude": {
+      "**/.git/objects/**": true,
+      "**/.git/subtree-cache/**": true,
+      "**/node_modules/**": true,
+      "**/.next/**": true,
+      "**/__pycache__/**": true,
+      "**/.pytest_cache/**": true
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-python.python",
+      "ms-python.debugpy",
+      "dbaeumer.vscode-eslint",
+      "esbenp.prettier-vscode",
+      "ms-azuretools.vscode-docker"
+    ]
+  }
+}

@@ -29,7 +29,8 @@ async def lifespan(app: FastAPI):
     # DB initialization runs in background so Cloud Run readiness is not blocked.
     async def _init_db_background() -> None:
         try:
-            await asyncio.wait_for(init_db(), timeout=10.0)
+            # Keep startup non-blocking, but allow enough time for safe schema/index updates.
+            await asyncio.wait_for(init_db(), timeout=120.0)
             logger.info("DB init completed")
         except asyncio.TimeoutError:
             logger.warning("DB init timed out; server continues")

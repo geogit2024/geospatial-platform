@@ -8,6 +8,8 @@ from .tenant_subscription import TenantSubscription
 from .tenant_usage_daily import TenantUsageDaily
 from .subscription_event import SubscriptionEvent
 from .layer_metadata import LayerMetadata
+from .tenant_cost_estimate_config import TenantCostEstimateConfig
+from .upload_cost_estimate_session import UploadCostEstimateSession
 
 __all__ = [
     "Image",
@@ -22,4 +24,6 @@ __all__ = [
     "TenantUsageDaily",
     "SubscriptionEvent",
     "LayerMetadata",
+    "TenantCostEstimateConfig",
+    "UploadCostEstimateSession",
 ]

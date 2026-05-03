@@ -34,23 +34,40 @@ def ensure_buckets() -> None:
     pass
 
 
-def generate_upload_url(key: str, content_type: str = "image/tiff") -> str:
+def generate_upload_url_for_bucket(
+    *,
+    bucket_name: str,
+    key: str,
+    content_type: str = "image/tiff",
+    expires_in_seconds: int | None = None,
+) -> str:
     """Generate a v4 signed PUT URL so browsers can upload directly to GCS."""
     credentials, _ = default()
     credentials.refresh(google_requests.Request())
 
     client = get_gcs()
-    blob = client.bucket(settings.storage_bucket_raw).blob(key)
+    blob = client.bucket(bucket_name).blob(key)
 
     url = blob.generate_signed_url(
         version="v4",
-        expiration=datetime.timedelta(seconds=settings.signed_url_expiry_seconds),
+        expiration=datetime.timedelta(
+            seconds=expires_in_seconds or settings.signed_url_expiry_seconds
+        ),
         method="PUT",
         content_type=content_type,
         service_account_email=credentials.service_account_email,
         access_token=credentials.token,
     )
     return url
+
+
+def generate_upload_url(key: str, content_type: str = "image/tiff") -> str:
+    return generate_upload_url_for_bucket(
+        bucket_name=settings.storage_bucket_raw,
+        key=key,
+        content_type=content_type,
+        expires_in_seconds=settings.signed_url_expiry_seconds,
+    )
 
 
 def generate_download_url(bucket: str, key: str) -> str:

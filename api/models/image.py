@@ -54,5 +54,16 @@ class Image(Base):
     datastore: Mapped[str] = mapped_column(String(128), nullable=True)
     postgis_table: Mapped[str] = mapped_column(String(128), nullable=True)
 
+    # Processing strategy/cost instrumentation
+    processing_strategy: Mapped[str] = mapped_column(String(64), nullable=True)
+    worker_type: Mapped[str] = mapped_column(String(64), nullable=True)
+    processing_queue: Mapped[str] = mapped_column(String(128), nullable=True)
+    requires_gdal: Mapped[bool] = mapped_column(nullable=True)
+    requires_postgis: Mapped[bool] = mapped_column(nullable=True)
+    requires_geoserver: Mapped[bool] = mapped_column(nullable=True)
+    processing_started_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    processing_finished_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    processing_duration_seconds: Mapped[float] = mapped_column(nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

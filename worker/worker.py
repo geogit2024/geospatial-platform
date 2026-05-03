@@ -31,6 +31,7 @@ from pipeline import (
     audit_raster,
     normalize_raster,
     get_raster_metadata,
+    inspect_raster_optimization,
     # backward-compat shims kept in pipeline.py
     reproject,
     build_overviews,
@@ -43,6 +44,7 @@ from services.vector_processor import (
     detect_vector_type,
     process_vector_file,
 )
+from services.processing_strategy import classify_processing_strategy
 
 logging.basicConfig(
     level=logging.INFO,
@@ -123,6 +125,15 @@ async def _ensure_image_extended_columns() -> None:
         "ALTER TABLE images ADD COLUMN IF NOT EXISTS datastore VARCHAR(128);",
         "ALTER TABLE images ADD COLUMN IF NOT EXISTS postgis_table VARCHAR(128);",
         "ALTER TABLE images ADD COLUMN IF NOT EXISTS geometry_type VARCHAR(64);",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_strategy VARCHAR(64);",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS worker_type VARCHAR(64);",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_queue VARCHAR(128);",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS requires_gdal BOOLEAN;",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS requires_postgis BOOLEAN;",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS requires_geoserver BOOLEAN;",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMP;",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_finished_at TIMESTAMP;",
+        "ALTER TABLE images ADD COLUMN IF NOT EXISTS processing_duration_seconds FLOAT;",
     ]
 
     async with AsyncSessionLocal() as session:
@@ -201,7 +212,8 @@ async def _get_image_runtime_state(image_id: str) -> Optional[dict]:
             text(
                 """
                 SELECT status, updated_at, original_key, processed_key, filename,
-                       asset_kind, source_format, workspace, datastore, postgis_table
+                       asset_kind, source_format, workspace, datastore, postgis_table,
+                       processing_strategy, worker_type, processing_queue
                 FROM images
                 WHERE id = :image_id
                 """
@@ -224,6 +236,9 @@ async def _get_image_runtime_state(image_id: str) -> Optional[dict]:
         "workspace": record[7],
         "datastore": record[8],
         "postgis_table": record[9],
+        "processing_strategy": record[10],
+        "worker_type": record[11],
+        "processing_queue": record[12],
     }
 
 
@@ -252,8 +267,8 @@ def _is_recent_heartbeat(updated_at: Optional[datetime]) -> bool:
     return updated_at >= (datetime.utcnow() - timedelta(seconds=grace_seconds))
 
 
-async def _blocking_call(func, *args):
-    return await asyncio.to_thread(func, *args)
+async def _blocking_call(func, *args, **kwargs):
+    return await asyncio.to_thread(func, *args, **kwargs)
 
 
 async def _progress_heartbeat(image_id: str, label: str) -> None:
@@ -339,7 +354,20 @@ async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> 
       - vector: normalize and persist in PostGIS, then emit publish event
     """
     log.info("[%s] Starting pipeline for %s", image_id, filename)
-    await _update_image(image_id, status="processing", error_message=None)
+    started_monotonic = time.monotonic()
+    strategy = classify_processing_strategy(filename=filename)
+    await _update_image(
+        image_id,
+        status="processing",
+        error_message=None,
+        processing_strategy=strategy.processing_strategy,
+        worker_type=strategy.worker_type,
+        processing_queue=strategy.processing_queue,
+        requires_gdal=strategy.requires_gdal,
+        requires_postgis=strategy.requires_postgis,
+        requires_geoserver=strategy.requires_geoserver,
+        processing_started_at=datetime.utcnow(),
+    )
 
     heartbeat_task = asyncio.create_task(_progress_heartbeat(image_id, "processing"))
     vector_type = detect_vector_type(filename)
@@ -413,8 +441,29 @@ async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> 
                 log.warning("[%s] Raster issues detected: %s", image_id, audit["issues"])
 
             # 3. Raster normalize (assign CRS -> EPSG:3857 -> NoData -> COG)
-            log.info("[%s] Normalizing raster", image_id)
-            await _blocking_call(normalize_raster, raw_path, cog_path, "EPSG:4326")
+            raster_plan = await _blocking_call(inspect_raster_optimization, raw_path)
+            can_passthrough_cog = (
+                bool(settings.raster_skip_cog_if_already_cog)
+                and raster_plan.get("is_cog") is True
+                and raster_plan.get("epsg") == settings.raster_target_crs
+            )
+            if can_passthrough_cog:
+                log.info(
+                    "[%s] Raster already optimized as COG in %s; skipping GDAL normalization",
+                    image_id,
+                    settings.raster_target_crs,
+                )
+                cog_path = raw_path
+            else:
+                log.info("[%s] Normalizing raster", image_id)
+                await _blocking_call(
+                    normalize_raster,
+                    raw_path,
+                    cog_path,
+                    "EPSG:4326",
+                    target_crs=settings.raster_target_crs,
+                    skip_reproject_if_same_crs=bool(settings.raster_skip_reproject_if_same_crs),
+                )
 
             # 4. Raster metadata from normalized COG
             metadata = await _blocking_call(get_raster_metadata, cog_path)
@@ -474,6 +523,13 @@ async def process_uploaded_image(image_id: str, raw_key: str, filename: str) -> 
         log.error("[%s] Pipeline error: %s", image_id, exc, exc_info=True)
         await _update_image(image_id, status="error", error_message=str(exc)[:1024])
     finally:
+        duration = max(time.monotonic() - started_monotonic, 0.0)
+        with suppress(Exception):
+            await _update_image(
+                image_id,
+                processing_finished_at=datetime.utcnow(),
+                processing_duration_seconds=round(duration, 3),
+            )
         heartbeat_task.cancel()
         with suppress(asyncio.CancelledError):
             await heartbeat_task
@@ -1027,6 +1083,79 @@ async def consume_stream(r: aioredis.Redis, stream: str, consumer_name: str) -> 
             log.error("Consumer loop error on %s: %s", stream, exc, exc_info=True)
             await asyncio.sleep(2)
 
+
+async def _consume_job_batch(r: aioredis.Redis, consumer_name: str) -> int:
+    """
+    Process one bounded batch across both streams and return message count handled.
+    Designed for Cloud Run Job mode (periodic execution + clean exit).
+    """
+    handled = 0
+
+    for stream in [settings.redis_stream_uploaded, settings.redis_stream_processed]:
+        handled += await _claim_stale_messages(r, stream, consumer_name)
+
+    messages = await r.xreadgroup(
+        groupname=settings.redis_consumer_group,
+        consumername=consumer_name,
+        streams={
+            settings.redis_stream_uploaded: ">",
+            settings.redis_stream_processed: ">",
+        },
+        count=max(int(settings.worker_job_batch_count), 1),
+        block=max(int(settings.worker_job_block_ms), 1000),
+    )
+    if not messages:
+        return handled
+
+    for stream, entries in messages:
+        handled += len(entries)
+        await _process_stream_entries(r, stream, entries)
+
+    return handled
+
+
+async def run_job_mode(r: aioredis.Redis, consumer_name: str) -> None:
+    idle_exit_seconds = max(int(settings.worker_job_idle_exit_seconds), 10)
+    max_runtime_seconds = max(int(settings.worker_job_max_runtime_seconds), 60)
+    started_at = time.monotonic()
+    last_activity = started_at
+    total_handled = 0
+
+    log.info(
+        "Job mode active | idle_exit=%ss max_runtime=%ss block_ms=%s batch_count=%s",
+        idle_exit_seconds,
+        max_runtime_seconds,
+        settings.worker_job_block_ms,
+        settings.worker_job_batch_count,
+    )
+
+    while True:
+        now = time.monotonic()
+        runtime = now - started_at
+        if runtime >= max_runtime_seconds:
+            log.info(
+                "Job mode exiting by max runtime (%ss). total_handled=%s",
+                max_runtime_seconds,
+                total_handled,
+            )
+            return
+
+        handled = await _consume_job_batch(r, consumer_name)
+        if handled > 0:
+            total_handled += handled
+            last_activity = time.monotonic()
+            log.info("Job mode handled batch=%s total=%s", handled, total_handled)
+            continue
+
+        idle_for = time.monotonic() - last_activity
+        if idle_for >= idle_exit_seconds:
+            log.info(
+                "Job mode exiting by idle (%0.1fs). total_handled=%s",
+                idle_for,
+                total_handled,
+            )
+            return
+
 # ─── Startup sync ───────────────────────────────────────────────────────────────
 
 async def sync_geoserver_on_startup() -> None:
@@ -1198,34 +1327,52 @@ async def _wait_for_redis_ready(r: aioredis.Redis) -> None:
 
 
 async def main() -> None:
-    threading.Thread(target=_start_health_server, daemon=True).start()
+    worker_mode = str(settings.worker_mode or "service").strip().lower()
+    if worker_mode not in {"service", "job"}:
+        log.warning("Unknown worker_mode=%s. Falling back to 'service'.", worker_mode)
+        worker_mode = "service"
+
+    if settings.worker_enable_health_server and worker_mode == "service":
+        threading.Thread(target=_start_health_server, daemon=True).start()
+
     log.info("GDAL Worker starting...")
     _diag_gcs_connectivity()
     _diag_redis_connectivity()
     r = _build_redis_client()
-    await _wait_for_redis_ready(r)
-    await _ensure_image_extended_columns()
-    await _ensure_layers_metadata_table()
-    await ensure_consumer_groups(r)
-    await recover_stalled_images(r)
+    try:
+        await _wait_for_redis_ready(r)
+        await _ensure_image_extended_columns()
+        await _ensure_layers_metadata_table()
+        await ensure_consumer_groups(r)
+        await recover_stalled_images(r)
 
-    instance_token = os.environ.get("K_REVISION", "local")
-    consumer_name = f"worker-{instance_token}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    log.info(
-        "Consumer: %s  |  streams: %s, %s  |  heartbeat=%ss  reclaim_idle_ms=%s",
-        consumer_name,
-        settings.redis_stream_uploaded,
-        settings.redis_stream_processed,
-        settings.worker_heartbeat_seconds,
-        settings.redis_claim_min_idle_ms,
-    )
+        instance_token = os.environ.get("K_REVISION", "local")
+        consumer_name = f"worker-{instance_token}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        log.info(
+            "Mode=%s | Consumer=%s | streams=%s,%s | heartbeat=%ss | reclaim_idle_ms=%s",
+            worker_mode,
+            consumer_name,
+            settings.redis_stream_uploaded,
+            settings.redis_stream_processed,
+            settings.worker_heartbeat_seconds,
+            settings.redis_claim_min_idle_ms,
+        )
 
-    await sync_geoserver_on_startup()
+        if settings.worker_enable_startup_sync:
+            await sync_geoserver_on_startup()
+        else:
+            log.info("GeoServer startup sync disabled by configuration")
 
-    await asyncio.gather(
-        consume_stream(r, settings.redis_stream_uploaded,  consumer_name),
-        consume_stream(r, settings.redis_stream_processed, f"{consumer_name}-pub"),
-    )
+        if worker_mode == "job":
+            await run_job_mode(r, consumer_name)
+            return
+
+        await asyncio.gather(
+            consume_stream(r, settings.redis_stream_uploaded, consumer_name),
+            consume_stream(r, settings.redis_stream_processed, f"{consumer_name}-pub"),
+        )
+    finally:
+        await r.aclose()
 
 
 if __name__ == "__main__":

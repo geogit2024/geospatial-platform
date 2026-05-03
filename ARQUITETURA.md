@@ -1,441 +1,596 @@
-# Documento Técnico de Arquitetura — GeoPublish
+# Documento Tecnico de Arquitetura - GeoPublish
 
-**Versão:** 1.0  
+**Versao:** 2.0  
 **Data:** Abril / 2026  
-**Projeto:** MVP Uploader Solution — Plataforma de Publicação de Imagens Geoespaciais
+**Projeto:** MVP Uploader Solution - Plataforma SaaS de Publicacao Geoespacial
 
 ---
 
-## 1. Visão Geral
+## 1. Visao Geral
 
-O GeoPublish é uma plataforma web para ingestão, processamento e publicação de imagens raster geoespaciais como serviços OGC (WMS, WMTS, WCS). O sistema recebe arquivos GeoTIFF (e formatos afins), normaliza a projeção para EPSG:3857 (Web Mercator), gera Cloud Optimized GeoTIFF (COG) e publica automaticamente no GeoServer, tornando a camada acessível via WMS/WMTS/WCS em SIGs como ArcGIS Online e QGIS.
+O GeoPublish e uma plataforma web para ingestao, processamento, catalogacao e publicacao de dados geoespaciais. O sistema aceita rasters e vetores, envia os arquivos diretamente para storage, processa os ativos em workers Python, publica camadas no GeoServer e expoe servicos OGC para consumo em ArcGIS Online, QGIS, WebGIS e no proprio visualizador da aplicacao.
+
+O estado atual do codigo cobre:
+
+- Rasters: GeoTIFF/TIFF, JP2, IMG e JPG/JPEG georreferenciavel.
+- Vetores: Shapefile em ZIP, KML, GeoJSON e JSON geoespacial.
+- Publicacao OGC: WMS, WMTS, WCS e WFS.
+- Metricas: storage, acessos, custos estimados/configurados e auditoria de estimativas pre-upload.
+- Operacao SaaS inicial: tenant padrao, planos, features, pricing por tenant, assinaturas e eventos.
+- Deploy atual orientado a GCP/Cloud Run, Google Cloud Storage, Cloud SQL/PostgreSQL, Redis e GeoServer.
 
 ---
 
-## 2. Diagrama de Arquitetura
+## 2. Arquitetura Logica
 
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Cliente / Browser                              │
+│                  Next.js 14 + React 18 + Tailwind                       │
+│ Landing · Acesso · Cadastro · Upload · Dashboard · Mapa                 │
+└──────────────────────────────┬──────────────────────────────────────────┘
+                               │ HTTPS
+                               │ /api/* via proxy runtime do Next.js
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              FastAPI                                    │
+│ REST · SQLAlchemy async · GCS signed URLs · Redis Streams               │
+│                                                                         │
+│ Upload: signed-url, confirm, cost-estimate                              │
+│ Images: list, detail, retry, delete, download-url                       │
+│ Services: OGC discovery + WMS/WFS/WMTS/WCS proxy                        │
+│ Metrics: storage, costs, simulation, cost-estimate audit                │
+│ Notifications: SMTP invite/admin welcome                                │
+└───────────────┬───────────────────────────────┬─────────────────────────┘
+                │                               │
+        Signed PUT/GET URL              Redis Streams
+                │                       image:uploaded / image:processed
+                ▼                               ▼
+┌─────────────────────────────┐       ┌───────────────────────────────────┐
+│ Google Cloud Storage         │       │ Worker Python                     │
+│                              │       │ Redis consumer group: workers     │
+│ raw bucket                   │       │                                   │
+│ processed/public bucket      │       │ Raster: GDAL CLI -> COG           │
+│                              │       │ Vector: GeoPandas -> PostGIS      │
+└───────────────┬─────────────┘       │ Publish: GeoServer REST           │
+                │                     │ Recovery: stale jobs + xautoclaim │
+                │                     └──────────────┬────────────────────┘
+                │                                    │
+                │                                    ▼
+                │                     ┌───────────────────────────────────┐
+                │                     │ PostgreSQL / PostGIS              │
+                │                     │ images, tenants, plans, metrics,  │
+                │                     │ layers_metadata, access logs      │
+                │                     └──────────────┬────────────────────┘
+                │                                    │
+                ▼                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              GeoServer                                  │
+│ Raster: CoverageStore GeoTIFF apontando para COG publico em GCS         │
+│ Vector: Datastore PostGIS + FeatureType                                 │
+│ Servicos: WMS, WMTS/GWC, WCS, WFS                                       │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                           CLIENTE / BROWSER                              │
-│                          Next.js 14 (Frontend)                           │
-│              Upload · Dashboard · Mapa · URLs de Serviço                 │
-└────────────────────────────┬─────────────────────────────────────────────┘
-                             │ HTTPS
-                             │
-┌────────────────────────────▼─────────────────────────────────────────────┐
-│                         FastAPI (API)                                     │
-│                  REST · PostgreSQL · MinIO · Redis                        │
-│                                                                            │
-│  POST /api/upload/signed-url  →  Gera URL presignada para upload direto  │
-│  POST /api/upload/confirm     →  Enfileira evento no Redis Stream         │
-│  GET  /api/images/            →  Lista imagens e status                   │
-│  GET  /api/services/{id}/ogc  →  Retorna URLs WMS/WMTS/WCS               │
-│  DELETE /api/images/{id}      →  Remove imagem + camada GeoServer         │
-└──────────┬────────────────────────────────────────────────┬──────────────┘
-           │                                                │
-    Upload direto                               Redis Stream
-    (XHR + progresso)                          image:uploaded
-           │                                                │
-┌──────────▼──────────┐                  ┌─────────────────▼────────────────┐
-│   MinIO (S3)         │                  │         GDAL Worker               │
-│                      │                  │                                    │
-│  raw-images/         │◄─── download ────│  1. Download raw raster            │
-│  processed-images/   │──── upload COG ─►│  2. Audit (CRS, bbox, NoData)     │
-│  (public-read)       │                  │  3. Normalize → EPSG:3857 → COG   │
-└──────────────────────┘                  │  4. Extrai metadados               │
-                                          │  5. Upload COG                     │
-                                          │  6. Publica evento image:processed │
-                                          │                                    │
-                                          │  ── Redis Stream image:processed ──│
-                                          │                                    │
-                                          │  7. Cria CoverageStore GeoServer   │
-                                          │  8. Cria layer (SRS + bbox)        │
-                                          │  9. Configura GeoWebCache          │
-                                          │  10. Valida WMS GetMap             │
-                                          │  11. Atualiza DB: status=published │
-                                          └─────────────────┬────────────────-─┘
-                                                            │ REST API
-                                          ┌─────────────────▼────────────────┐
-                                          │          GeoServer 2.25+          │
-                                          │  workspace: geoimages             │
-                                          │  Lê COG via HTTP Range requests   │
-                                          │  WMS · WMTS · WCS                 │
-                                          └──────────────────────────────────┘
-```
 
 ---
 
-## 3. Stack Tecnológica
+## 3. Stack Tecnologica
 
-| Camada | Tecnologia | Versão |
+| Camada | Tecnologia | Observacao |
 |---|---|---|
-| Frontend | Next.js + React | 14.2 / 18 |
-| Estilo | TailwindCSS | 3.4 |
-| Mapa interativo | Leaflet + react-leaflet | 1.9 / 4.2 |
-| API | FastAPI + Uvicorn | 0.111 / 0.29 |
-| ORM / DB | SQLAlchemy asyncio + asyncpg | 2.0 / 0.29 |
-| Banco de dados | PostgreSQL | 16 |
-| Fila de eventos | Redis Streams | 7 |
-| Armazenamento | MinIO (S3-compatible) | RELEASE.2024 |
-| Processamento raster | GDAL CLI (subprocess) | 3.8.4 |
-| Serviços OGC | GeoServer | 2.25 |
-| Containerização | Docker + Docker Compose | — |
-| Deploy | Railway | — |
+| Frontend | Next.js 14.2.35, React 18, TypeScript | App Router, proxy runtime `/api/[...path]` |
+| UI | TailwindCSS, lucide-react, Leaflet | Dashboard, upload, mapa e landing |
+| API | FastAPI 0.111, Uvicorn, Pydantic Settings | Routers modulares por dominio |
+| ORM/DB | SQLAlchemy asyncio, asyncpg | `NullPool` para Cloud Run/scale-to-zero |
+| Banco | PostgreSQL + PostGIS | Metadados, tabelas vetoriais, metricas |
+| Fila | Redis Streams | Consumer group `workers`, reclaim com `XAUTOCLAIM` |
+| Storage | Google Cloud Storage | Signed URLs v4 e ADC; bucket processado publico para COG |
+| Raster | GDAL CLI 3.8.4 | `gdalinfo`, `gdalwarp`, `gdal_translate`, `gdaladdo` |
+| Vetor | GeoPandas, GeoAlchemy2, psycopg2 | Normalizacao para EPSG:4326 e carga em PostGIS |
+| OGC | GeoServer 2.25.x + GeoWebCache | CoverageStore, Datastore PostGIS, WMS/WMTS/WCS/WFS |
+| Deploy | Cloud Run / Cloud Run Jobs / Cloud Build | API, frontend e worker job/servico |
+| Local legado | Docker Compose + MinIO | Compose ainda descreve MinIO; ver ponto de atencao em §14 |
 
 ---
 
-## 4. Serviços e Responsabilidades
+## 4. Componentes
 
-### 4.1 Frontend (Next.js 14)
+### 4.1 Frontend
 
-Aplicação React em modo standalone com três páginas principais:
+Local: `frontend/`
 
-| Página | Rota | Função |
-|---|---|---|
-| Upload | `/upload` | Formulário de seleção e envio de arquivo diretamente para o MinIO via URL presignada com progresso em tempo real |
-| Dashboard | `/dashboard` | Lista de imagens com status, painel de metadados (ID, CRS, BBox, URLs OGC, URL do serviço WMS copiável) |
-| Mapa | `/map` | Visualizador Leaflet com overlay WMS da camada publicada |
+Principais rotas:
 
-**Proxy de API** — `src/app/api/[...path]/route.ts`  
-Todas as requisições `/api/*` do navegador passam por um proxy Next.js no servidor, que repassa para o backend usando a variável de ambiente `API_URL` lida em tempo de execução (não em build time). Isso permite alterar a URL do backend sem reconstruir a imagem.
-
----
-
-### 4.2 API (FastAPI)
-
-Responsável pela orquestração: autenticação de uploads, persistência no banco de dados, publicação de eventos e exposição dos metadados.
-
-#### Endpoints principais
-
-```
-POST /api/upload/signed-url
-  Cria registro Image (status=UPLOADING)
-  Gera presigned PUT URL (TTL 1h) para upload direto ao MinIO
-  Retorna: image_id, upload_url, raw_key
-
-POST /api/upload/confirm
-  Atualiza status → UPLOADED
-  Publica evento no Redis Stream image:uploaded
-  Retorna: {"status": "uploaded", "message": "Processing queued"}
-
-GET  /api/images/
-  Lista imagens com filtro por status e paginação
-
-GET  /api/images/{id}
-  Retorna imagem com todos os campos (CRS, bbox, URLs OGC)
-
-GET  /api/services/{id}/ogc
-  Retorna WMS/WMTS/WCS GetCapabilities e GetMap de exemplo
-
-DELETE /api/images/{id}
-  Remove registro do banco e coverageStore do GeoServer
-```
-
-#### Modelo de dados — tabela `images`
-
-| Campo | Tipo | Descrição |
-|---|---|---|
-| id | UUID | Chave primária (auto-gerado) |
-| filename | VARCHAR(512) | Nome original do arquivo |
-| original_key | TEXT | Caminho S3 do arquivo bruto |
-| processed_key | TEXT | Caminho S3 do COG gerado |
-| status | ENUM | Fluxo de status (ver §6) |
-| error_message | TEXT | Detalhe de falha |
-| crs | TEXT | CRS nativo do COG (ex: EPSG:3857) |
-| bbox_minx/miny/maxx/maxy | FLOAT | Bounding box em WGS84 graus |
-| layer_name | TEXT | Nome da camada no GeoServer (workspace:layer) |
-| wms_url | TEXT | URL base do serviço WMS |
-| wmts_url | TEXT | URL base do serviço WMTS |
-| wcs_url | TEXT | URL base do serviço WCS |
-| created_at | TIMESTAMP | Data de criação |
-| updated_at | TIMESTAMP | Última atualização |
-
----
-
-### 4.3 Worker GDAL
-
-Processo Python assíncrono que consome dois Redis Streams em paralelo.
-
-#### Estágio 1 — `process_uploaded_image`
-Acionado pelo stream `image:uploaded`.
-
-```
-1. Download do arquivo bruto do MinIO (streaming via get_object)
-2. Auditoria: CRS presente? NoData definido? Georeferenciamento válido?
-3. Normalização GDAL:
-     a. gdal_translate -a_srs EPSG:4326   (atribui CRS se ausente)
-     b. gdalwarp -t_srs EPSG:3857         (reprojeta para Web Mercator)
-     c. gdal_translate -of COG            (gera Cloud Optimized GeoTIFF)
-        COMPRESS=DEFLATE, PREDICTOR=2
-        BLOCKXSIZE=BLOCKYSIZE=512
-        OVERVIEW_RESAMPLING=AVERAGE
-4. Extração de metadados (CRS, bbox nativa EPSG:3857, bbox WGS84)
-5. Upload do COG para MinIO:processed-images
-6. Publica evento no stream image:processed com:
-     - gs_data_path  (URL HTTPS pública do COG)
-     - native_crs    (EPSG:3857)
-     - native_bbox   (metros EPSG:3857, JSON)
-```
-
-#### Estágio 2 — `publish_processed_image`
-Acionado pelo stream `image:processed`.
-
-```
-1. Upsert GeoServer CoverageStore
-     - Tipo: GeoTIFF
-     - URL: HTTPS pública do COG no MinIO (HTTP Range requests)
-2. Upsert Coverage (layer)
-     - SRS: native CRS + EPSG:4326 + EPSG:3857
-     - projectionPolicy: REPROJECT_TO_DECLARED
-     - nativeBoundingBox: metros EPSG:3857 (extent exata)
-     - latLonBoundingBox: graus WGS84 (obrigatório para ArcGIS Online)
-3. Configura GeoWebCache (gridsets EPSG:3857 + EPSG:4326, PNG + JPEG)
-4. Valida WMS: GetMap 1.3.0 256×256 PNG via URL interna do GeoServer
-     - Falha → rollback: remove coverageStore, status=error
-     - Sucesso → atualiza DB: status=published + layer_name + URLs OGC
-```
-
-#### Pipeline GDAL — `worker/pipeline/__init__.py`
-
-Todas as operações usam ferramentas CLI via subprocess. Não são utilizados bindings Python do GDAL (exceto para transformação de CRS como fallback).
-
-| Função | Ferramenta CLI | Descrição |
-|---|---|---|
-| `audit_raster()` | `gdalinfo -json` | Inspeciona CRS, NoData, bbox, dimensões |
-| `normalize_raster()` | `gdalwarp` + `gdal_translate` | Reprojeção + geração COG |
-| `get_raster_metadata()` | `gdalinfo -json` | Extrai CRS e bbox do COG final |
-| `build_overviews()` | `gdaladdo` | Pirâmides de resolução |
-
-**Extração de EPSG:** O WKT de um PROJCRS contém múltiplas entradas `ID["EPSG",...]` — a última corresponde ao CRS projetado externo (ex: EPSG:3857). O sistema usa `re.findall()[-1]` para garantir a extração correta.
-
----
-
-### 4.4 Armazenamento — MinIO
-
-Dois buckets S3:
-
-| Bucket | Política | Uso |
-|---|---|---|
-| `raw-images` | privado | Arquivos originais enviados pelo cliente |
-| `processed-images` | public-read | COGs gerados — acessíveis via URL HTTPS simples pelo GeoServer |
-
-O bucket `processed-images` tem política `public-read` para que o GeoServer acesse os COGs via HTTP Range requests sem necessidade de URL presignada (que teria TTL limitado).
-
----
-
-### 4.5 GeoServer
-
-Servidor OGC que expõe as camadas publicadas.
-
-| Recurso | Valor |
+| Rota | Funcao |
 |---|---|
-| Workspace | `geoimages` |
-| Nome do layer | `img_{uuid_com_underscores}` |
-| Tipo de store | GeoTIFF (COG via HTTPS) |
-| SRS anunciados | EPSG:3857, EPSG:4326 + CRS nativo |
-| Projection Policy | REPROJECT_TO_DECLARED |
-| GeoWebCache | Gridsets EPSG:3857 + EPSG:4326 + GoogleMapsCompatible |
+| `/` | Landing page comercial |
+| `/acesso` e `/cadastro` | Fluxos iniciais de acesso/cadastro |
+| `/upload` | Upload direto para storage, progresso por XHR e estimativa de custo opcional |
+| `/dashboard` | Lista de camadas, detalhes, metadados, URLs OGC, download e metricas |
+| `/map` | Visualizador Leaflet com camadas WMS publicadas |
+| `/usuarios` e `/onboarding` | Telas auxiliares de operacao SaaS |
 
-**Persistência:** O container GeoServer no Railway não possui volume persistente. A cada reinicialização do worker, a função `sync_geoserver_on_startup()` reconcilia todas as imagens com status `published` no banco de dados, recriando os layers automaticamente.
+O frontend nao chama a API diretamente pelo host final. Ele usa chamadas relativas para `/api/*`; a rota `frontend/src/app/api/[...path]/route.ts` resolve `API_URL` ou `DEV_API_URL` em tempo de execucao e encaminha a requisicao para o backend. Isso permite alterar o backend em Cloud Run sem rebuild da imagem do frontend.
 
----
+### 4.2 API FastAPI
 
-## 5. Fluxo Completo de uma Requisição
+Local: `api/`
 
-```
-Usuário seleciona arquivo GeoTIFF no frontend
-        │
-        ▼
-POST /api/upload/signed-url
-  → Cria registro Image (status=UPLOADING)
-  → Retorna presigned PUT URL (MinIO)
-        │
-        ▼
-XHR PUT direto para MinIO (upload com progresso)
-        │
-        ▼
-POST /api/upload/confirm
-  → status=UPLOADED
-  → Publica evento Redis: image:uploaded
-        │
-        ▼
-Worker consome image:uploaded
-  → Download → Auditoria → Normalização GDAL → Upload COG
-  → status=processing → status=processed
-  → Publica evento Redis: image:processed
-        │
-        ▼
-Worker consome image:processed
-  → GeoServer: CoverageStore + Coverage + GWC
-  → Valida WMS GetMap (interno)
-  → status=published + wms_url + wmts_url + wcs_url
-        │
-        ▼
-Dashboard atualiza via polling (5s)
-  → Exibe metadados, URLs OGC, campo "URL do serviço WMS" copiável
-        │
-        ▼
-Usuário copia URL WMS e adiciona no ArcGIS Online / QGIS
-```
+Responsabilidades:
 
----
+- Gerar signed URLs v4 para upload/download em GCS.
+- Persistir registros em PostgreSQL.
+- Classificar estrategia de processamento antes do upload.
+- Publicar eventos em Redis Streams.
+- Acionar opcionalmente Cloud Run Job do worker.
+- Expor discovery e proxies OGC.
+- Registrar acessos/downloads para metricas.
+- Calcular custos e estimativas pre-upload.
+- Enviar notificacoes SMTP quando configurado.
 
-## 6. Fluxo de Status da Imagem
+Routers ativos:
 
-```
-pending → uploading → uploaded → processing → processed → publishing → published
-                                                                  └──► error
-```
-
-| Status | Gatilho |
-|---|---|
-| `pending` | Registro criado |
-| `uploading` | URL presignada gerada |
-| `uploaded` | Upload confirmado pelo cliente |
-| `processing` | Worker iniciou o pipeline GDAL |
-| `processed` | COG gerado e enviado ao MinIO |
-| `publishing` | Worker iniciou publicação no GeoServer |
-| `published` | Layer ativo no GeoServer, WMS validado |
-| `error` | Falha em qualquer etapa (mensagem detalhada no campo `error_message`) |
-
----
-
-## 7. Comunicação entre Serviços
-
-### Redis Streams
-
-```
-Stream: image:uploaded
-  Campos: image_id, raw_key, filename
-  Produtor: API (POST /upload/confirm)
-  Consumidor: Worker (xreadgroup, consumer group: workers)
-
-Stream: image:processed
-  Campos: image_id, processed_key, gs_data_path,
-          filename, native_crs, native_bbox (JSON)
-  Produtor: Worker (Stage 1)
-  Consumidor: Worker (Stage 2)
-```
-
-O uso de `xreadgroup` com `block=5000ms` garante que múltiplas réplicas do worker não processem a mesma mensagem. A confirmação (`xack`) ocorre apenas após o processamento bem-sucedido.
-
----
-
-## 8. Configuração e Variáveis de Ambiente
-
-| Variável | Serviço | Descrição |
+| Router | Prefixo | Responsabilidade |
 |---|---|---|
-| `DATABASE_URL` | API, Worker | PostgreSQL asyncpg |
+| `upload.py` | `/api/upload` | Signed URL, confirmacao, estimativa de custo |
+| `images.py` | `/api/images` | Lista, detalhe, retry, download-url, delete |
+| `services.py` | `/api/services` | OGC discovery e proxies WMS/WFS/WMTS/WCS |
+| `metrics.py` | `/api/metrics` | Storage, custos, simulacao e auditoria |
+| `notifications.py` | `/api/notifications` | Convite e boas-vindas por e-mail |
+
+### 4.3 Worker
+
+Local: `worker/`
+
+O worker consome dois streams:
+
+- `image:uploaded`: baixa o arquivo bruto e executa o processamento.
+- `image:processed`: publica a camada no GeoServer.
+
+Modos de execucao:
+
+- `WORKER_MODE=service`: processo continuo com health server HTTP opcional.
+- `WORKER_MODE=job`: processa lotes finitos e encerra por idle/max runtime, adequado para Cloud Run Jobs.
+
+Recursos de resiliencia:
+
+- `xreadgroup` com consumer group `workers`.
+- `xautoclaim` para recuperar mensagens pendentes de consumidores mortos.
+- Heartbeat por atualizacao de `images.updated_at`.
+- Recuperacao de imagens travadas em `processing` ou `publishing`.
+- Sincronizacao opcional no startup para republicar camadas `published` no GeoServer.
+
+### 4.4 Storage
+
+O codigo atual de API e worker usa Google Cloud Storage por ADC:
+
+- API: `api/services/storage.py`
+- Worker: `worker/storage_client.py`
+
+Buckets:
+
+| Bucket | Uso | Acesso |
+|---|---|---|
+| `STORAGE_BUCKET_RAW` | Arquivos originais | Privado, upload/download por signed URL |
+| `STORAGE_BUCKET_PROCESSED` | COGs e saidas processadas raster | Publico para leitura pelo GeoServer |
+
+O bucket processado precisa permitir leitura publica dos COGs, porque o GeoServer aponta o CoverageStore para uma URL permanente (`https://storage.googleapis.com/...`) e usa HTTP Range requests. Signed URLs com expiracao quebrariam camadas ja publicadas.
+
+### 4.5 PostgreSQL / PostGIS
+
+O banco guarda metadados operacionais e tabelas vetoriais:
+
+- `images`: registro principal do ativo, status, bbox, URLs OGC, estrategia e instrumentacao de processamento.
+- `layers_metadata`: espelho de metadados de camadas publicadas.
+- `asset_access_logs`: downloads e chamadas OGC amostradas/registradas.
+- `tenants`, `plans`, `plan_features`, `tenant_subscriptions`, `subscription_events`.
+- `tenant_pricing`, `tenant_usage_daily`.
+- `tenant_cost_estimate_config`, `upload_cost_estimate_sessions`.
+- Tabelas PostGIS geradas para vetores (`layer_<id>` no schema configurado).
+
+Na inicializacao da API, `init_db()` roda em background, executa `Base.metadata.create_all`, aplica compatibilidade de schema via `ALTER TABLE/CREATE INDEX IF NOT EXISTS`, semeia planos e cria assinatura padrao.
+
+### 4.6 GeoServer
+
+O GeoServer e a camada de publicacao OGC:
+
+- Rasters: CoverageStore GeoTIFF apontando para COG publico em GCS.
+- Vetores: Datastore PostGIS por workspace e FeatureType por tabela.
+- WMS: usado pelo dashboard, mapa, ArcGIS e QGIS.
+- WMTS: via GeoWebCache, com gridsets EPSG:4326, EPSG:3857 e GoogleMapsCompatible para raster.
+- WCS: publicado para raster.
+- WFS: publicado para vetor.
+
+O sistema tambem oferece proxies por imagem em `/api/services/{image_id}/...-proxy`. Para WMS, o proxy filtra o GetCapabilities para a camada alvo, reescreve URLs internas para endpoints publicos e aplica ajustes de compatibilidade para ArcGIS Online.
+
+---
+
+## 5. Fluxo de Upload e Processamento
+
+```text
+1. Usuario seleciona arquivo no frontend.
+2. Frontend pode iniciar estimativa de custo pre-upload.
+3. Frontend chama POST /api/upload/signed-url.
+4. API valida extensao/tamanho, classifica estrategia e cria Image como uploading.
+5. API retorna signed PUT URL do GCS.
+6. Browser envia bytes diretamente ao storage por XHR.
+7. Frontend chama POST /api/upload/confirm.
+8. API marca uploaded, publica image:uploaded e, se habilitado, aciona Cloud Run Job.
+9. Worker consome image:uploaded.
+10. Worker processa raster ou vetor e marca processed.
+11. Worker publica image:processed.
+12. Worker consome image:processed, publica no GeoServer e valida WMS.
+13. Worker marca published e grava URLs/metadados.
+14. Dashboard atualiza por polling e exibe servicos OGC.
+```
+
+---
+
+## 6. Pipeline Raster
+
+Entrada: `.tif`, `.tiff`, `.geotiff`, `.jp2`, `.img`, `.jpg`, `.jpeg`.
+
+Fluxo em `worker/pipeline/__init__.py`:
+
+1. `audit_raster()` roda `gdalinfo -json` e registra problemas de CRS, NoData e georreferenciamento.
+2. `inspect_raster_optimization()` identifica COG existente, EPSG, driver, dimensoes e overviews.
+3. Se o arquivo ja for COG no CRS alvo e `RASTER_SKIP_COG_IF_ALREADY_COG=true`, o worker pode evitar normalizacao.
+4. Caso contrario, `normalize_raster()`:
+   - atribui `EPSG:4326` se nao houver CRS;
+   - reprojeta para `RASTER_TARGET_CRS` (padrao `EPSG:3857`);
+   - gera COG com DEFLATE, tiles 512x512 e overview resampling AVERAGE.
+5. `get_raster_metadata()` extrai CRS e bboxes nativo/WGS84.
+6. COG e enviado para `STORAGE_BUCKET_PROCESSED`.
+7. `GeoServerClient.publish_cog()` cria/atualiza CoverageStore, Coverage e GWC.
+8. Worker valida WMS GetMap interno antes de finalizar como `published`.
+
+Observacoes:
+
+- O pipeline usa GDAL CLI por subprocess, nao bindings Python de GDAL.
+- ECW e rejeitado na API porque o driver nao esta disponivel no ambiente de producao.
+- JPG/JPEG entra como raster, mas depende de georreferenciamento ou fallback GDAL com `SRC_METHOD=NO_GEOTRANSFORM`.
+
+---
+
+## 7. Pipeline Vetorial
+
+Entrada: `.zip` com Shapefile, `.kml`, `.geojson`, `.json`.
+
+Fluxo em `worker/services/vector_processor.py`:
+
+1. Detecta tipo por extensao.
+2. Para Shapefile, valida ZIP e exige sidecars `.shp`, `.shx` e `.dbf`.
+3. Le arquivo com GeoPandas.
+4. Remove geometrias nulas/vazias.
+5. Assume EPSG:4326 quando nao ha CRS.
+6. Reprojeta para EPSG:4326 quando necessario.
+7. Corrige geometrias de poligono com `buffer(0)`.
+8. Normaliza nomes de colunas para identificadores SQL seguros.
+9. Converte tipos nao escalares para string.
+10. Opcionalmente simplifica geometrias conforme configuracao.
+11. Salva em PostGIS com tabela `layer_<uuid_normalizado>`.
+12. Cria indice GIST em `geom`.
+13. Publica workspace/datastore/featuretype no GeoServer.
+
+Workspaces vetoriais sao derivados do tenant: `build_workspace_name(tenant_id)`, com prefixo `VECTOR_WORKSPACE_PREFIX` (padrao `user`).
+
+---
+
+## 8. Fluxo de Status
+
+```text
+pending -> uploading -> uploaded -> processing -> processed -> publishing -> published
+                                                        \             \
+                                                         \             -> error
+                                                          -> error
+```
+
+| Status | Responsavel | Significado |
+|---|---|---|
+| `pending` | Modelo | Estado inicial teorico |
+| `uploading` | API | Registro criado e signed URL emitida |
+| `uploaded` | API | Upload confirmado e evento enfileirado |
+| `processing` | Worker | Processamento raster/vetor iniciado |
+| `processed` | Worker | Saida normalizada pronta para publicacao |
+| `publishing` | Worker | Publicacao GeoServer em andamento |
+| `published` | Worker | Camada ativa e WMS validado |
+| `error` | API/Worker | Falha com `error_message` persistido |
+
+---
+
+## 9. Endpoints Principais
+
+### Upload
+
+| Metodo | Rota | Descricao |
+|---|---|---|
+| `POST` | `/api/upload/signed-url` | Cria imagem, classifica estrategia e retorna signed PUT URL |
+| `POST` | `/api/upload/confirm` | Confirma upload, exige estimativa aceita se informada, enfileira processamento |
+| `GET` | `/api/upload/cost-estimate/config` | Retorna configuracao efetiva de estimativa |
+| `PUT` | `/api/upload/cost-estimate/config` | Atualiza configuracao por tenant |
+| `POST` | `/api/upload/cost-estimate/start` | Cria sessao de estimativa e URL temporaria |
+| `POST` | `/api/upload/cost-estimate/calculate` | Recalcula estimativa com premissas alteradas |
+| `POST` | `/api/upload/cost-estimate/accept` | Aceita estimativa para vincular ao upload |
+
+### Imagens
+
+| Metodo | Rota | Descricao |
+|---|---|---|
+| `GET` | `/api/images/` | Lista imagens com filtro opcional de status e paginacao |
+| `GET` | `/api/images/{image_id}` | Detalhe da imagem |
+| `GET` | `/api/images/{image_id}/download-url` | Signed GET URL para raw ou processed |
+| `POST` | `/api/images/{image_id}/retry` | Reenfileira imagem em `error` ou `processing` |
+| `DELETE` | `/api/images/{image_id}` | Remove GeoServer, storage, PostGIS/layers_metadata e registro |
+
+### Servicos OGC
+
+| Metodo | Rota | Descricao |
+|---|---|---|
+| `GET` | `/api/services/{image_id}/ogc` | Discovery de WMS/WFS/WMTS/WCS |
+| `GET` | `/api/services/{image_id}/wms-proxy` | Proxy WMS por camada |
+| `GET` | `/api/services/{image_id}/wfs-proxy` | Proxy WFS por camada |
+| `GET` | `/api/services/{image_id}/wmts-proxy` | Proxy WMTS |
+| `GET` | `/api/services/{image_id}/wcs-proxy` | Proxy WCS |
+
+### Metricas e notificacoes
+
+| Metodo | Rota | Descricao |
+|---|---|---|
+| `GET` | `/api/metrics/storage` | Total, distribuicao, crescimento, top arquivos e top acessos |
+| `GET` | `/api/metrics/costs` | Custo por janela, configurado ou via BigQuery Billing Export |
+| `POST` | `/api/metrics/costs/simulate` | Simula custo incremental |
+| `GET` | `/api/metrics/upload-cost-estimates` | Auditoria de sessoes de estimativa |
+| `POST` | `/api/metrics/upload-cost-estimates/cleanup` | Remove sessoes expiradas |
+| `POST` | `/api/notifications/invite-user` | Envia convite SMTP |
+| `POST` | `/api/notifications/admin-welcome` | Envia boas-vindas SMTP |
+
+---
+
+## 10. Modelo de Dados Resumido
+
+### `images`
+
+Campos relevantes:
+
+- Identificacao: `id`, `tenant_id`, `filename`.
+- Storage: `original_key`, `processed_key`.
+- Status: `status`, `error_message`.
+- Espacial: `crs`, `bbox_minx`, `bbox_miny`, `bbox_maxx`, `bbox_maxy`.
+- OGC: `layer_name`, `wms_url`, `wfs_url`, `wmts_url`, `wcs_url`.
+- Ativo: `asset_kind`, `source_format`, `geometry_type`.
+- GeoServer/PostGIS: `workspace`, `datastore`, `postgis_table`.
+- Estrategia: `processing_strategy`, `worker_type`, `processing_queue`.
+- Flags: `requires_gdal`, `requires_postgis`, `requires_geoserver`.
+- Temporizacao: `processing_started_at`, `processing_finished_at`, `processing_duration_seconds`.
+- Auditoria: `created_at`, `updated_at`.
+
+### Tabelas SaaS/metricas
+
+| Tabela | Uso |
+|---|---|
+| `tenants` | Cadastro logico de tenants |
+| `plans`, `plan_features` | Planos e features habilitaveis |
+| `tenant_subscriptions`, `subscription_events` | Assinatura e historico |
+| `tenant_pricing` | Precificacao por tenant |
+| `tenant_usage_daily` | Base de uso diario |
+| `asset_access_logs` | Downloads e chamadas OGC |
+| `tenant_cost_estimate_config` | Premissas de estimativa por tenant |
+| `upload_cost_estimate_sessions` | Sessoes de estimativa, aceite e consumo |
+| `layers_metadata` | Espelho de publicacao por camada |
+
+---
+
+## 11. Estrategia de Processamento
+
+A API classifica o arquivo no momento do signed URL com `services/processing_strategy.py`:
+
+| Entrada | `asset_kind` | `processing_strategy` | `worker_type` | Fila logica |
+|---|---|---|---|---|
+| `.tif`, `.tiff`, `.geotiff` | raster | `raster_light` | `raster` | `processing:raster-light` |
+| `.jp2`, `.img` | raster | `raster_heavy` | `raster-heavy` | `processing:raster-heavy` |
+| `.jpg`, `.jpeg` | raster | `jpeg_georeferenced` | `raster` | `processing:raster-light` |
+| `.zip` | vector | `zip_vector` | `vector-heavy` | `processing:vector-heavy` |
+| `.kml`, `.geojson`, `.json` | vector | `vector_light` ou `vector_heavy` | `vector`/`vector-heavy` | `processing:vector-light/heavy` |
+
+No codigo atual os streams Redis ainda sao globais (`image:uploaded` e `image:processed`); a fila logica e persistida para instrumentacao/custos e para evolucao futura.
+
+---
+
+## 12. Metricas, Custos e Auditoria
+
+### Storage
+
+`GET /api/metrics/storage` agrega:
+
+- Total de arquivos.
+- Tamanho total e tamanho medio.
+- Crescimento por janela.
+- Distribuicao por tipo.
+- Top arquivos por tamanho.
+- Top acessados por download, OGC ou ambos.
+- Serie temporal de uso.
+
+Os tamanhos sao lidos do GCS quando disponiveis. Os resultados possuem cache em memoria por TTL.
+
+### Custos
+
+`GET /api/metrics/costs` pode usar:
+
+- `BILLING_COST_SOURCE=configured`: custos fixos de env/pricing.
+- `BILLING_COST_SOURCE=gcp_billing_export`: tabela BigQuery de export do Billing.
+
+Tambem ha simulacao incremental em `/api/metrics/costs/simulate`.
+
+### Estimativa pre-upload
+
+A estimativa pre-upload e uma simulacao rapida baseada em:
+
+- tipo de ativo;
+- extensao;
+- tamanho em GB;
+- fator de complexidade;
+- premissas de storage/processamento/download;
+- pricing por tenant ou defaults.
+
+O fluxo cria uma sessao, permite recalculo, exige aceite quando o upload informa `estimate_session_id` e marca a sessao como `consumed` na confirmacao do upload.
+
+---
+
+## 13. Variaveis de Ambiente Principais
+
+| Variavel | Servico | Descricao |
+|---|---|---|
+| `DATABASE_URL` | API, Worker | PostgreSQL async; Cloud SQL pode usar socket Unix |
 | `REDIS_URL` | API, Worker | Redis connection string |
-| `STORAGE_ENDPOINT` | API, Worker | URL interna do MinIO |
-| `STORAGE_PUBLIC_URL` | Worker | URL HTTPS pública (para GeoServer e presigned URLs) |
-| `STORAGE_ACCESS_KEY` | API, Worker | Credencial MinIO |
-| `STORAGE_SECRET_KEY` | API, Worker | Credencial MinIO |
-| `GEOSERVER_URL` | Worker | URL interna REST (ex: http://geoserver:8080/geoserver) |
-| `GEOSERVER_PUBLIC_URL` | Worker | URL HTTPS pública (OGC URLs retornadas ao cliente) |
-| `GEOSERVER_ADMIN_USER` | Worker | Usuário admin GeoServer |
-| `GEOSERVER_ADMIN_PASSWORD` | Worker | Senha admin GeoServer |
-| `GEOSERVER_WORKSPACE` | Worker | Nome do workspace (geoimages) |
-| `API_URL` | Frontend | URL do backend (lida em runtime, não em build time) |
+| `REDIS_STREAM_UPLOADED` | API, Worker | Stream de upload confirmado |
+| `REDIS_STREAM_PROCESSED` | API, Worker | Stream de saida pronta para publicacao |
+| `REDIS_CONSUMER_GROUP` | Worker | Consumer group dos workers |
+| `STORAGE_BUCKET_RAW` | API, Worker | Bucket GCS de originais |
+| `STORAGE_BUCKET_PROCESSED` | API, Worker | Bucket GCS de saidas processadas |
+| `GEOSERVER_URL` | API, Worker | URL interna do GeoServer |
+| `GEOSERVER_PUBLIC_URL` | API, Worker | URL publica usada em respostas/URLs OGC |
+| `GEOSERVER_ADMIN_USER` | API, Worker | Usuario admin GeoServer |
+| `GEOSERVER_ADMIN_PASSWORD` | API, Worker | Senha admin GeoServer |
+| `GEOSERVER_WORKSPACE` | API, Worker | Workspace raster padrao |
+| `VECTOR_WORKSPACE_PREFIX` | Worker | Prefixo de workspaces vetoriais |
+| `VECTOR_DEFAULT_DATASTORE` | API, Worker | Datastore PostGIS padrao |
+| `POSTGIS_SCHEMA` | API, Worker | Schema PostGIS |
+| `API_URL` / `DEV_API_URL` | Frontend | Backend usado pelo proxy Next.js |
+| `CORS_ORIGINS` | API | Origens permitidas |
+| `CORS_ORIGIN_REGEX` | API | Regex para ArcGIS/ArcGIS Online |
+| `WORKER_MODE` | Worker | `service` ou `job` |
+| `WORKER_JOB_TRIGGER_ENABLED` | API | Aciona Cloud Run Job apos enfileirar |
+| `WORKER_JOB_*` | API/Worker | Projeto, regiao, nome e lock de trigger |
+| `BILLING_COST_SOURCE` | API | `configured` ou `gcp_billing_export` |
+| `GCP_BILLING_EXPORT_*` | API | Projeto/tabela BigQuery do billing |
+| `SMTP_*` | API | Envio de convites e boas-vindas |
+| `UPLOAD_COST_ESTIMATE_*` | API | Feature flag e premissas de estimativa |
+| `RASTER_TARGET_CRS` | API, Worker | CRS alvo raster, padrao `EPSG:3857` |
 
 ---
 
-## 9. Deploy — Railway
+## 14. Deploy e Ambientes
 
-Cada serviço é implantado como um serviço independente no Railway:
+### Producao atual esperada
 
-| Serviço | Contexto de Build | Dockerfile |
-|---|---|---|
-| API | `/` (raiz) | `Dockerfile.api` |
-| Frontend | `frontend/` | `frontend/Dockerfile` |
-| Worker | `worker/` | `worker/Dockerfile` |
-| GeoServer | Railway Docker image | `kartoza/geoserver` |
-| MinIO | `minio/` | `minio/Dockerfile` |
+O codigo atual esta alinhado a GCP:
 
-**Comandos de deploy:**
-```bash
-# API
-railway up --service api
+- API em Cloud Run.
+- Frontend em Cloud Run.
+- Worker como Cloud Run service ou Cloud Run Job.
+- GCS para storage.
+- Cloud SQL/PostgreSQL com PostGIS.
+- Redis gerenciado ou externo.
+- GeoServer acessivel internamente pela API/worker e publicamente por URL HTTPS.
+- Cloud Build para imagens (`cloudbuild.api.billing.yaml`, `cloudbuild.api.ondemand-worker.yaml`).
 
-# Frontend
-cd frontend && railway up --service frontend
+### Compose local
 
-# Worker
-cd worker && railway up --service worker
-```
+`docker-compose.yml` ainda descreve uma pilha local com PostgreSQL, Redis, MinIO, API, worker e GeoServer. Esse arquivo e util como referencia de topologia local, mas ha um ponto importante: os clientes atuais de storage em `api/services/storage.py` e `worker/storage_client.py` estao implementados para Google Cloud Storage com ADC, nao para MinIO/S3.
 
-**Health checks:**
-- API: `GET /health`
-- Frontend: `GET /dashboard`
-- Worker: ping Redis via Python
+Para que o compose volte a funcionar integralmente com MinIO, e necessario reintroduzir/abstrair um backend S3-compatible ou ajustar os containers locais para usar GCS/ADC. Enquanto isso nao for feito, a arquitetura executavel principal e GCS/Cloud Run.
 
 ---
 
-## 10. Decisões Arquiteturais Relevantes
+## 15. Decisoes Arquiteturais
 
-### Upload direto ao MinIO (presigned URL)
-O cliente faz PUT diretamente ao MinIO, evitando que a API seja gargalo para arquivos grandes. A API apenas gera a URL presignada e confirma o upload.
+### ADR-001 - Upload direto ao storage
 
-### GDAL via subprocess (sem bindings Python)
-O pipeline usa ferramentas CLI (`gdalwarp`, `gdal_translate`, `gdalinfo`, `gdaladdo`) via subprocess. Isso torna o código mais portável e evita problemas de incompatibilidade de versão entre bindings e instalação do GDAL.
+O browser envia arquivos diretamente ao bucket por signed URL. A API nao trafega os bytes, reduzindo custo, memoria e tempo de request para arquivos grandes.
 
-### COG público (sem presigned URL para GeoServer)
-O bucket `processed-images` é público. O GeoServer acessa o COG via URL HTTPS simples com HTTP Range requests (nativo no GeoServer 2.21+). Presigned URLs expirariam (máximo 7 dias no MinIO), quebrando as camadas.
+### ADR-002 - Redis Streams como barramento
 
-### Reconciliação no startup
-O GeoServer no Railway não persiste configuração entre reinicializações. O worker executa `sync_geoserver_on_startup()` a cada inicialização, recriando todos os layers a partir do banco de dados PostgreSQL.
+Redis Streams desacopla API e worker, oferece persistencia basica, consumer groups e recuperacao de mensagens pendentes. O banco continua sendo a fonte de verdade do estado.
 
-### Proxy de API no frontend em runtime
-A URL do backend (`API_URL`) é lida em tempo de execução pelo proxy Next.js (`/api/[...path]/route.ts`), não durante o build. Isso permite redirecionar o frontend para qualquer ambiente sem rebuild da imagem Docker.
+### ADR-003 - COG publico para raster processado
 
-### Detecção de EPSG em WKT
-WKT de CRS projetado (PROJCRS) contém múltiplas entradas `ID["EPSG",...]` — a primeira corresponde ao CRS geográfico base (EPSG:4326) e a última ao CRS projetado (ex: EPSG:3857). O sistema usa `re.findall()[-1]` para extrair o código correto.
+Rasters processados ficam como Cloud Optimized GeoTIFF em bucket publico. O GeoServer precisa de URL permanente e suporte a Range requests; signed URLs expiraveis nao sao adequadas para camadas publicadas.
+
+### ADR-004 - PostGIS para vetores
+
+Vetores sao normalizados para EPSG:4326 e salvos em PostGIS. O GeoServer publica FeatureTypes a partir de um Datastore PostGIS, habilitando WMS/WFS e consultas vetoriais.
+
+### ADR-005 - Proxies OGC por imagem
+
+Os endpoints proxy resolvem problemas de HTTPS, URLs internas, CORS e compatibilidade com ArcGIS Online. O WMS proxy tambem filtra capabilities para a camada especifica, evitando que clientes escolham camadas erradas do workspace.
+
+### ADR-006 - Worker em modo servico ou job
+
+O mesmo codigo roda como worker continuo ou como job on-demand. A API pode disparar Cloud Run Job apos confirmar upload, mantendo o Redis como fonte de persistencia quando o trigger falha.
+
+### ADR-007 - DB init tolerante a cold start
+
+A API inicializa schema em background no lifespan para nao bloquear readiness do Cloud Run. O engine usa `NullPool` para evitar conexoes antigas em scale-to-zero.
 
 ---
 
-## 11. Estrutura de Diretórios
+## 16. Estrutura de Diretorios
 
-```
+```text
 UPLOADER-SOLUTION/
-├── api/                        # Serviço FastAPI
-│   ├── main.py                 # App, lifespan, routers
-│   ├── config.py               # Settings (pydantic)
-│   ├── database.py             # SQLAlchemy async
-│   ├── models/image.py         # ORM + enums
-│   ├── routers/upload.py       # Signed URL + confirm
-│   ├── routers/images.py       # CRUD
-│   ├── routers/services.py     # OGC endpoints
-│   └── services/storage.py     # MinIO client
+├── api/
+│   ├── main.py                         # FastAPI app, lifespan e routers
+│   ├── config.py                       # Settings
+│   ├── database.py                     # SQLAlchemy async e schema compatibility
+│   ├── models/                         # ORM: images, tenants, plans, metrics
+│   ├── routers/                        # Upload, images, services, metrics, notifications
+│   └── services/                       # Storage, queue, custos, metrics, email, trigger
 │
-├── worker/                     # Serviço de processamento
-│   ├── worker.py               # Event loop + pipeline stages
-│   ├── config.py               # Settings
-│   ├── storage_client.py       # S3 download/upload
-│   ├── geoserver_client.py     # GeoServer REST API
-│   └── pipeline/
-│       ├── __init__.py         # audit, normalize, metadata (GDAL CLI)
-│       ├── cog.py              # gdal_translate COG
-│       ├── reproject.py        # gdalwarp
-│       └── pyramids.py         # gdaladdo
+├── worker/
+│   ├── worker.py                       # Consumers, recovery, job/service mode
+│   ├── config.py                       # Settings do worker
+│   ├── storage_client.py               # GCS download/upload/public URL
+│   ├── geoserver_client.py             # Publicacao raster
+│   ├── pipeline/                       # GDAL raster pipeline
+│   └── services/
+│       ├── vector_processor.py         # GeoPandas/PostGIS
+│       ├── geoserver_service.py        # Publicacao vetorial
+│       └── processing_strategy.py      # Classificacao
 │
-├── frontend/                   # Aplicação Next.js
-│   └── src/
-│       ├── app/
-│       │   ├── api/[...path]/  # Proxy runtime → backend
-│       │   ├── dashboard/      # Lista + detalhes de imagens
-│       │   ├── upload/         # Formulário de upload
-│       │   └── map/            # Mapa Leaflet
-│       ├── components/         # Sidebar, StatusBadge
-│       └── lib/
-│           ├── api.ts          # Cliente TypeScript
-│           └── utils.ts        # Helpers
+├── frontend/
+│   ├── src/app/                        # App Router: landing, upload, dashboard, mapa
+│   ├── src/components/                 # Shell, sidebar, badges e metricas
+│   └── src/lib/                        # Cliente API, auth local, utils
 │
-├── docker-compose.yml          # Stack local completo
-├── Dockerfile.api              # Build API
-├── Dockerfile.worker           # Build Worker (base GDAL)
-└── .env.example                # Variáveis de ambiente
+├── tests/                              # Testes de pipeline, storage, metrics, WMS e custos
+├── geoserver/                          # Scripts auxiliares de workspace
+├── minio/                              # Config local legado
+├── context/                            # Documentacao auxiliar
+├── docker-compose.yml                  # Stack local legada/referencia
+├── Dockerfile.api
+├── Dockerfile.worker
+├── cloudbuild.api.billing.yaml
+├── cloudbuild.api.ondemand-worker.yaml
+├── .env.example
+└── ARQUITETURA.md
 ```
 
 ---
 
-*Documento gerado em Abril/2026 — RK Sistemas*
+## 17. Testes Existentes
+
+Coberturas relevantes em `tests/`:
+
+- Pipeline raster e normalizacao.
+- Helpers vetoriais e extensoes de upload.
+- Estrategia de processamento.
+- Estimativa de custo pre-upload.
+- Limpeza de storage.
+- Metricas de storage/custos e fallback de billing.
+- Eventos de acesso OGC.
+- WMS GetCapabilities filtrado e estilo vetorial.
+
+---
+
+## 18. Pontos de Atencao
+
+1. O compose local ainda usa variaveis e servico MinIO, mas os clientes de storage atuais sao GCS-only. Isso deve ser tratado antes de depender do compose para desenvolvimento completo.
+2. `tenant_id` ainda e efetivamente padrao em varios fluxos de upload/listagem; a base SaaS existe, mas isolamento completo por usuario/tenant ainda precisa ser consolidado.
+3. A classificacao grava filas logicas, mas o roteamento fisico ainda usa dois streams globais.
+4. Autenticacao/autorizacao real ainda nao aparece como camada backend forte; o frontend possui associacao local de proprietario para filtros de UI.
+5. O startup da API aplica alteracoes de schema diretamente. Para producao madura, migracoes Alembic versionadas devem substituir esse mecanismo.
+6. O GeoServer precisa de URL publica HTTPS consistente para uso externo; os proxies API reduzem o impacto, mas WMTS/WCS ainda podem expor URL publica direta conforme configuracao.
+
+---
+
+*Documento atualizado em Abril/2026 com base na leitura do codigo atual do repositorio.*

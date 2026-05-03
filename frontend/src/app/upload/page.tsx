@@ -1,10 +1,21 @@
-﻿"use client";
+"use client";
+
 import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Upload, FileImage, CheckCircle2, XCircle, Loader2 } from "lucide-react";
-import { requestSignedUrl, uploadFileDirect, confirmUpload } from "@/lib/api";
-import { cn } from "@/lib/utils";
+import { CheckCircle2, FileImage, Loader2, Upload, XCircle } from "lucide-react";
+
 import { registerImageOwner } from "@/lib/auth";
+import {
+  acceptUploadCostEstimate,
+  confirmUpload,
+  getUploadCostEstimateConfig,
+  recalculateUploadCostEstimate,
+  requestSignedUrl,
+  startUploadCostEstimate,
+  type UploadCostEstimate,
+  uploadFileDirect,
+} from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 type Step = "idle" | "signing" | "uploading" | "confirming" | "done" | "error";
 
@@ -28,6 +39,8 @@ export default function UploadPage() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const uploadingRef = useRef(false);
+  const estimateRunRef = useRef(0);
+
   const [file, setFile] = useState<File | null>(null);
   const [step, setStep] = useState<Step>("idle");
   const [progress, setProgress] = useState(0);
@@ -35,32 +48,149 @@ export default function UploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
 
-  const handleFile = (f: File) => {
-    const ext = "." + f.name.split(".").pop()!.toLowerCase();
-    if (!ACCEPTED.includes(ext)) {
-      setError(`Formato nao suportado: ${ext}. Use: ${ACCEPTED.join(", ")}`);
-      return;
-    }
-    setFile(f);
-    setError(null);
-    setStep("idle");
-    setProgress(0);
-  };
+  const [estimateEnabled, setEstimateEnabled] = useState(false);
+  const [estimateLoading, setEstimateLoading] = useState(false);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
+  const [estimateSessionId, setEstimateSessionId] = useState<string | null>(null);
+  const [estimate, setEstimate] = useState<UploadCostEstimate | null>(null);
+  const [expectedMonthlyDownloads, setExpectedMonthlyDownloads] = useState(100);
+  const [avgDownloadSizeRatio, setAvgDownloadSizeRatio] = useState(0.35);
+  const [recalculatingEstimate, setRecalculatingEstimate] = useState(false);
 
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
-    const f = e.dataTransfer.files[0];
-    if (f) handleFile(f);
+  const formatCurrency = useCallback((value: number, currency: string) => {
+    return new Intl.NumberFormat("pt-BR", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value);
   }, []);
+
+  const resetEstimateState = useCallback(() => {
+    setEstimateEnabled(false);
+    setEstimateLoading(false);
+    setEstimateError(null);
+    setEstimateSessionId(null);
+    setEstimate(null);
+    setExpectedMonthlyDownloads(100);
+    setAvgDownloadSizeRatio(0.35);
+    setRecalculatingEstimate(false);
+  }, []);
+
+  const loadEstimateForFile = useCallback(
+    async (selectedFile: File) => {
+      const runId = ++estimateRunRef.current;
+      setEstimateLoading(true);
+      setEstimateError(null);
+      setEstimateEnabled(false);
+      setEstimate(null);
+      setEstimateSessionId(null);
+
+      try {
+        const config = await getUploadCostEstimateConfig();
+        if (runId !== estimateRunRef.current) return;
+
+        if (!config.is_enabled) {
+          setEstimateEnabled(false);
+          return;
+        }
+
+        setEstimateEnabled(true);
+        const started = await startUploadCostEstimate({
+          filename: selectedFile.name,
+          sizeBytes: selectedFile.size,
+          contentType: selectedFile.type || "application/octet-stream",
+        });
+        if (runId !== estimateRunRef.current) return;
+
+        setEstimateSessionId(started.session_id);
+        setEstimate(started.estimate);
+        setExpectedMonthlyDownloads(
+          Number(started.estimate.assumptions_used.expected_monthly_downloads || 0)
+        );
+        setAvgDownloadSizeRatio(Number(started.estimate.assumptions_used.avg_download_size_ratio || 0.35));
+      } catch (e: unknown) {
+        if (runId !== estimateRunRef.current) return;
+        const message = e instanceof Error ? e.message : "Erro desconhecido";
+
+        if (message.startsWith("403")) {
+          setEstimateEnabled(false);
+          setEstimateError(null);
+        } else {
+          setEstimateError(`Falha ao calcular previsao de custo: ${message}`);
+        }
+      } finally {
+        if (runId === estimateRunRef.current) {
+          setEstimateLoading(false);
+        }
+      }
+    },
+    []
+  );
+
+  const handleFile = useCallback(
+    (selectedFile: File) => {
+      const ext = "." + selectedFile.name.split(".").pop()!.toLowerCase();
+      if (!ACCEPTED.includes(ext)) {
+        setError(`Formato nao suportado: ${ext}. Use: ${ACCEPTED.join(", ")}`);
+        return;
+      }
+
+      setFile(selectedFile);
+      setError(null);
+      setStep("idle");
+      setProgress(0);
+      setImageId(null);
+      void loadEstimateForFile(selectedFile);
+    },
+    [loadEstimateForFile]
+  );
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragging(false);
+      const dropped = e.dataTransfer.files[0];
+      if (dropped) handleFile(dropped);
+    },
+    [handleFile]
+  );
+
+  const recalculateEstimate = async () => {
+    if (!estimateSessionId || recalculatingEstimate) return;
+    setRecalculatingEstimate(true);
+    setEstimateError(null);
+
+    try {
+      const response = await recalculateUploadCostEstimate({
+        sessionId: estimateSessionId,
+        expectedMonthlyDownloads: Math.max(0, Math.floor(expectedMonthlyDownloads)),
+        avgDownloadSizeRatio: Math.max(0.01, Math.min(2, avgDownloadSizeRatio)),
+      });
+      setEstimate(response.estimate);
+    } catch (e: unknown) {
+      setEstimateError(e instanceof Error ? e.message : "Falha ao recalcular previsao de custo.");
+    } finally {
+      setRecalculatingEstimate(false);
+    }
+  };
 
   const startUpload = async () => {
     if (!file || uploadingRef.current) return;
     uploadingRef.current = true;
     setError(null);
+    setStep("signing");
 
     try {
-      setStep("signing");
+      if (estimateSessionId && estimateEnabled) {
+        const accepted = await acceptUploadCostEstimate({
+          sessionId: estimateSessionId,
+          expectedMonthlyDownloads: Math.max(0, Math.floor(expectedMonthlyDownloads)),
+          avgDownloadSizeRatio: Math.max(0.01, Math.min(2, avgDownloadSizeRatio)),
+        });
+        setEstimate(accepted.estimate);
+      }
+
       const { image_id, upload_url, content_type } = await requestSignedUrl(
         file.name,
         file.type || "application/octet-stream",
@@ -72,9 +202,8 @@ export default function UploadPage() {
       await uploadFileDirect(upload_url, file, setProgress, content_type);
 
       setStep("confirming");
-      await confirmUpload(image_id);
+      await confirmUpload(image_id, estimateSessionId || undefined);
       registerImageOwner(image_id);
-
       setStep("done");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Erro desconhecido");
@@ -83,6 +212,8 @@ export default function UploadPage() {
       uploadingRef.current = false;
     }
   };
+
+  const canStartUpload = Boolean(file) && ["idle", "error"].includes(step) && !estimateLoading;
 
   const STEP_LABEL: Record<Step, string> = {
     idle: "",
@@ -142,6 +273,99 @@ export default function UploadPage() {
         )}
       </div>
 
+      {file && (
+        <div className="mt-5 rounded-xl border border-[#2a3f58] bg-[#0f1d30] p-4">
+          <div className="flex items-center justify-between gap-4">
+            <h2 className="text-sm font-semibold text-[#dfeeff]">Previsao de custo antes do processamento</h2>
+            {estimateLoading && (
+              <span className="inline-flex items-center gap-1 text-xs text-[#9fb3cf]">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Calculando...
+              </span>
+            )}
+          </div>
+
+          {!estimateLoading && !estimateEnabled && (
+            <p className="mt-2 text-xs text-[#91a8c8]">
+              Previsao de custo indisponivel para o tenant atual. O upload segue funcionando normalmente.
+            </p>
+          )}
+
+          {!estimateLoading && estimate && (
+            <>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="rounded-lg bg-[#13263d] p-3">
+                  <p className="text-[11px] uppercase tracking-wide text-[#84a2c8]">Primeiro mes (provavel)</p>
+                  <p className="mt-1 text-lg font-semibold text-[#e6f3ff]">
+                    {formatCurrency(estimate.breakdown.first_month_total, estimate.currency)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-[#9fb3cf]">
+                    Faixa: {formatCurrency(estimate.breakdown.first_month_range.minimum, estimate.currency)} a{" "}
+                    {formatCurrency(estimate.breakdown.first_month_range.maximum, estimate.currency)}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-[#13263d] p-3">
+                  <p className="text-[11px] uppercase tracking-wide text-[#84a2c8]">Recorrente mensal</p>
+                  <p className="mt-1 text-lg font-semibold text-[#e6f3ff]">
+                    {formatCurrency(estimate.breakdown.recurring_monthly_total, estimate.currency)}
+                  </p>
+                  <p className="mt-1 text-[11px] text-[#9fb3cf]">
+                    Storage {formatCurrency(estimate.breakdown.storage_monthly, estimate.currency)} + publicacao{" "}
+                    {formatCurrency(estimate.breakdown.publication_monthly, estimate.currency)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <label className="text-xs text-[#9fb3cf]">
+                  Downloads/mes esperados
+                  <input
+                    type="number"
+                    min={0}
+                    step={10}
+                    value={expectedMonthlyDownloads}
+                    onChange={(e) =>
+                      setExpectedMonthlyDownloads(Math.max(0, Number(e.target.value || 0)))
+                    }
+                    className="mt-1 w-full rounded-md border border-[#2a3f58] bg-[#0c1727] px-2 py-1.5 text-sm text-[#dbe8fb] outline-none focus:border-[#38bdf8]"
+                  />
+                </label>
+
+                <label className="text-xs text-[#9fb3cf]">
+                  Razao media de download
+                  <input
+                    type="number"
+                    min={0.01}
+                    max={2}
+                    step={0.01}
+                    value={avgDownloadSizeRatio}
+                    onChange={(e) =>
+                      setAvgDownloadSizeRatio(Number(e.target.value || 0.35))
+                    }
+                    className="mt-1 w-full rounded-md border border-[#2a3f58] bg-[#0c1727] px-2 py-1.5 text-sm text-[#dbe8fb] outline-none focus:border-[#38bdf8]"
+                  />
+                </label>
+
+                <div className="flex items-end">
+                  <button
+                    onClick={recalculateEstimate}
+                    disabled={recalculatingEstimate || !estimateSessionId}
+                    className={cn(
+                      "w-full rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                      !recalculatingEstimate && estimateSessionId
+                        ? "bg-[#1d4f7a] text-[#dff4ff] hover:bg-[#25608f]"
+                        : "bg-[#1d2b3e] text-[#7f97b5] cursor-not-allowed"
+                    )}
+                  >
+                    {recalculatingEstimate ? "Recalculando..." : "Recalcular previsao"}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
       {step === "uploading" && (
         <div className="mt-4 w-full bg-[#1d2b3e] rounded-full h-2">
           <div className="bg-[#38bdf8] h-2 rounded-full transition-all duration-300" style={{ width: `${progress}%` }} />
@@ -159,6 +383,13 @@ export default function UploadPage() {
         </div>
       )}
 
+      {estimateError && (
+        <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          <XCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          {estimateError}
+        </div>
+      )}
+
       {error && (
         <div className="mt-4 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
           <XCircle className="w-4 h-4 mt-0.5 shrink-0" />
@@ -170,16 +401,16 @@ export default function UploadPage() {
         {step !== "done" ? (
           <button
             onClick={startUpload}
-            disabled={!file || !["idle", "error"].includes(step)}
+            disabled={!canStartUpload}
             className={cn(
               "flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-colors",
-              file && ["idle", "error"].includes(step)
+              canStartUpload
                 ? "bg-[#1d4f7a] text-[#dff4ff] hover:bg-[#25608f]"
                 : "bg-[#1d2b3e] text-[#7f97b5] cursor-not-allowed"
             )}
           >
             <Upload className="w-4 h-4" />
-            Iniciar Upload e Processamento
+            {estimateLoading ? "Calculando previsao..." : "Iniciar Upload e Processamento"}
           </button>
         ) : (
           <>
@@ -195,6 +426,7 @@ export default function UploadPage() {
                 setStep("idle");
                 setProgress(0);
                 setImageId(null);
+                resetEstimateState();
               }}
               className="px-5 py-2.5 rounded-lg border border-[#2a3f58] text-[#9fb3cf] font-medium text-sm hover:bg-[#122033]"
             >
@@ -212,4 +444,3 @@ export default function UploadPage() {
     </div>
   );
 }
-

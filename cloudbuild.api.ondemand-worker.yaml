@@ -1,0 +1,11 @@
+steps:
+- name: gcr.io/cloud-builders/docker
+  args:
+  - build
+  - -f
+  - Dockerfile.api
+  - -t
+  - us-central1-docker.pkg.dev/geopublish/cloud-run-source-deploy/geopublish-api:storage-gb-kpi-20260427-01
+  - .
+images:
+- us-central1-docker.pkg.dev/geopublish/cloud-run-source-deploy/geopublish-api:storage-gb-kpi-20260427-01

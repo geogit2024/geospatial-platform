@@ -8,6 +8,7 @@ worker.py can do: from pipeline import audit_raster, normalize_raster, ...
 Public API
 ----------
 audit_raster(path)                      -> dict
+inspect_raster_optimization(path)       -> dict
 normalize_raster(src, dst)              -> None
 get_raster_metadata(path)               -> dict
 transform_bbox_to_wgs84(bbox, src_crs)  -> dict
@@ -100,6 +101,13 @@ def _extract_nodata(info: dict) -> Optional[float]:
     return float(nd) if nd is not None else None
 
 
+def _is_cog(info: dict) -> bool:
+    metadata = info.get("metadata", {}) or {}
+    image_structure = metadata.get("IMAGE_STRUCTURE", {}) or {}
+    layout = str(image_structure.get("LAYOUT") or "").upper()
+    return layout == "COG"
+
+
 def _run(cmd: list, label: str, timeout: int = 600) -> None:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -179,6 +187,30 @@ def audit_raster(path: str) -> dict:
     return result
 
 
+def inspect_raster_optimization(path: str) -> dict:
+    """
+    Inspect a raster once and return low-risk optimization flags.
+
+    This intentionally avoids guessing. Unknown values keep the legacy path.
+    """
+    info = _gdalinfo(path)
+    size = info.get("size", [0, 0])
+    bands = info.get("bands", []) or []
+    overview_count = 0
+    if bands:
+        overview_count = len(bands[0].get("overviews", []) or [])
+
+    return {
+        "epsg": _extract_epsg(info),
+        "has_crs": bool(info.get("coordinateSystem", {}).get("wkt")),
+        "is_cog": _is_cog(info),
+        "driver": info.get("driverShortName"),
+        "width": int(size[0] or 0),
+        "height": int(size[1] or 0),
+        "overview_count": overview_count,
+    }
+
+
 # ─── Stage 2: Normalize ───────────────────────────────────────────────────────
 
 def normalize_raster(
@@ -186,11 +218,13 @@ def normalize_raster(
     dst_path: str,
     assume_epsg: str = "EPSG:4326",
     nodata_value: float = 0,
+    target_crs: str = "EPSG:3857",
+    skip_reproject_if_same_crs: bool = True,
 ) -> None:
     """
     Full normalization pipeline:
       1. Assign CRS (assume_epsg) if raster has none
-      2. Reproject to EPSG:3857 with bilinear resampling + set NoData
+      2. Reproject to target_crs with bilinear resampling + set NoData
       3. Generate Cloud Optimized GeoTIFF (DEFLATE, 512x512 tiles, auto-overviews)
     """
     tmpdir        = os.path.dirname(dst_path) or tempfile.gettempdir()
@@ -209,40 +243,46 @@ def normalize_raster(
         else:
             reproj_src = src_path
 
-        # 2. Reproject to EPSG:3857
-        log.info("[normalize] Reprojecting → EPSG:3857")
-        warp_cmd = [
-            "gdalwarp",
-            "-t_srs",     "EPSG:3857",
-            "-r",         "bilinear",
-            "-dstnodata", str(nodata_value),
-            "-wo",        f"NUM_THREADS={os.cpu_count() or 4}",
-            "-co",        "COMPRESS=LZW",
-            "-co",        "TILED=YES",
-            reproj_src, step_warped,
-        ]
-        try:
-            _run(warp_cmd, "gdalwarp EPSG:3857")
-        except RuntimeError as exc:
-            if not _is_missing_georeference_warp_error(exc):
-                raise
-
-            # Some JPEG/JPG files arrive without affine transform or GCPs.
-            # Retry with explicit GDAL override to keep the pipeline flowing.
-            log.warning(
-                "[normalize] Missing affine transform/GCPs - retrying gdalwarp with SRC_METHOD=NO_GEOTRANSFORM"
-            )
-            _run([
+        epsg = _extract_epsg(info)
+        if has_crs and skip_reproject_if_same_crs and epsg == target_crs:
+            log.info("[normalize] Skipping reprojection; source already in %s", target_crs)
+            cog_src = reproj_src
+        else:
+            # 2. Reproject to target CRS
+            log.info("[normalize] Reprojecting -> %s", target_crs)
+            warp_cmd = [
                 "gdalwarp",
-                "-t_srs",     "EPSG:3857",
+                "-t_srs",     target_crs,
                 "-r",         "bilinear",
                 "-dstnodata", str(nodata_value),
                 "-wo",        f"NUM_THREADS={os.cpu_count() or 4}",
-                "-to",        "SRC_METHOD=NO_GEOTRANSFORM",
                 "-co",        "COMPRESS=LZW",
                 "-co",        "TILED=YES",
                 reproj_src, step_warped,
-            ], "gdalwarp EPSG:3857 (NO_GEOTRANSFORM)")
+            ]
+            try:
+                _run(warp_cmd, f"gdalwarp {target_crs}")
+            except RuntimeError as exc:
+                if not _is_missing_georeference_warp_error(exc):
+                    raise
+
+                # Some JPEG/JPG files arrive without affine transform or GCPs.
+                # Retry with explicit GDAL override to keep the pipeline flowing.
+                log.warning(
+                    "[normalize] Missing affine transform/GCPs - retrying gdalwarp with SRC_METHOD=NO_GEOTRANSFORM"
+                )
+                _run([
+                    "gdalwarp",
+                    "-t_srs",     target_crs,
+                    "-r",         "bilinear",
+                    "-dstnodata", str(nodata_value),
+                    "-wo",        f"NUM_THREADS={os.cpu_count() or 4}",
+                    "-to",        "SRC_METHOD=NO_GEOTRANSFORM",
+                    "-co",        "COMPRESS=LZW",
+                    "-co",        "TILED=YES",
+                    reproj_src, step_warped,
+                ], f"gdalwarp {target_crs} (NO_GEOTRANSFORM)")
+            cog_src = step_warped
 
         # 3. Generate COG with DEFLATE + NoData
         log.info("[normalize] Generating COG (DEFLATE, 512x512 tiles)")
@@ -256,7 +296,7 @@ def normalize_raster(
             "-co",       "BLOCKXSIZE=512",
             "-co",       "BLOCKYSIZE=512",
             "-co",       "OVERVIEW_RESAMPLING=AVERAGE",
-            step_warped, dst_path,
+            cog_src, dst_path,
         ], "gdal_translate COG")
 
         log.info("[normalize] Done → %s", dst_path)

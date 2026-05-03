@@ -13,6 +13,7 @@ from database import get_db
 from models import AssetAccessLog, Image
 from services.storage import delete_image_related_files, generate_download_url
 from services.queue import publish_upload_event
+from services.worker_job_trigger import trigger_worker_job_best_effort
 
 router = APIRouter(prefix="/images", tags=["images"])
 log = logging.getLogger("api.images")
@@ -254,6 +255,7 @@ async def retry_image(image_id: str, db: AsyncSession = Depends(get_db)) -> dict
         raw_key=image.original_key,
         filename=image.filename,
     )
+    await trigger_worker_job_best_effort(f"image retry image_id={image.id}")
     return {"image_id": image.id, "status": "uploaded", "message": "Re-queued for processing"}
 
 

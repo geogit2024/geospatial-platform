@@ -32,6 +32,13 @@ class WorkerSettings(BaseSettings):
     worker_enable_stalled_recovery: bool = True
     worker_recover_processing_minutes: int = 30
     worker_recover_publishing_minutes: int = 20
+    worker_mode: str = "service"  # service | job
+    worker_enable_health_server: bool = True
+    worker_enable_startup_sync: bool = True
+    worker_job_idle_exit_seconds: int = 45
+    worker_job_max_runtime_seconds: int = 540
+    worker_job_block_ms: int = 4000
+    worker_job_batch_count: int = 8
 
     # Redis stream resilience
     redis_claim_min_idle_ms: int = 900000
@@ -45,6 +52,14 @@ class WorkerSettings(BaseSettings):
     vector_publish_timeout_seconds: int = 120
     vector_simplify_tolerance: float = 0.0
     vector_simplify_min_features: int = 5000
+
+    # Processing strategy/cost controls
+    raster_target_crs: str = "EPSG:3857"
+    raster_skip_reproject_if_same_crs: bool = True
+    raster_skip_cog_if_already_cog: bool = True
+    raster_generate_overviews_min_mb: int = 100
+    vector_light_max_mb: int = 20
+    vector_light_max_features: int = 10000
 
     class Config:
         env_file = ".env"

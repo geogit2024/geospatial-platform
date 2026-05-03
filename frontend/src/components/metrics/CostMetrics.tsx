@@ -133,9 +133,9 @@ export default function CostMetricsSection() {
           tone="blue"
         />
         <KpiCard
-          title="Custo por GB"
+          title="GB armazenado"
           value={loading || !data ? "..." : formatCurrency(data.cost_per_gb, currency)}
-          subtitle="por GB/mes"
+          subtitle="custo mensal por GB"
         />
         <KpiCard
           title="Processamento"

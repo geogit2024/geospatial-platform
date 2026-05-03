@@ -23,6 +23,7 @@ DEFAULT_PLANS = [
             "wcs": False,
             "download_raw": False,
             "priority_support": False,
+            "upload_cost_estimate_v1": False,
         },
     },
     {
@@ -42,6 +43,7 @@ DEFAULT_PLANS = [
             "wcs": True,
             "download_raw": True,
             "priority_support": False,
+            "upload_cost_estimate_v1": True,
         },
     },
     {
@@ -61,6 +63,7 @@ DEFAULT_PLANS = [
             "wcs": True,
             "download_raw": True,
             "priority_support": True,
+            "upload_cost_estimate_v1": True,
         },
     },
 ]
@@ -89,16 +92,24 @@ async def seed_default_plans(db: AsyncSession) -> None:
         db.add(plan)
         created.append(plan)
 
-    if not created:
-        return
+    if created:
+        await db.flush()
 
-    await db.flush()
+    plans_result = await db.execute(select(Plan))
+    plans = plans_result.scalars().all()
 
-    for plan in created:
+    feature_rows = await db.execute(select(PlanFeature.plan_id, PlanFeature.feature_key))
+    existing_features = {(row[0], row[1]) for row in feature_rows.all()}
+
+    has_changes = bool(created)
+    for plan in plans:
         defaults = next((p for p in DEFAULT_PLANS if p["code"] == plan.code), None)
         if not defaults:
             continue
         for feature_key, enabled in defaults["features"].items():
+            marker = (plan.id, feature_key)
+            if marker in existing_features:
+                continue
             db.add(
                 PlanFeature(
                     plan_id=plan.id,
@@ -107,8 +118,11 @@ async def seed_default_plans(db: AsyncSession) -> None:
                     limit_value=None,
                 )
             )
+            existing_features.add(marker)
+            has_changes = True
 
-    await db.commit()
+    if has_changes:
+        await db.commit()
 
 
 async def ensure_default_subscription(
