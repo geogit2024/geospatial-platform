@@ -1,0 +1,120 @@
+# GeoPublish PROD deployment pipeline.
+#
+# Uso manual:
+#   gcloud builds submit --config infra/cloudbuild/prod.yaml \
+#     --substitutions=_REGION=us-central1,_REPOSITORY=geopublish
+#
+# Politica:
+# - Build uma vez por commit.
+# - Publica imagens imutaveis com $SHORT_SHA no Artifact Registry.
+# - Atualiza PROD somente quando este pipeline for executado manualmente.
+# - Variaveis e segredos de runtime devem estar configurados no Cloud Run e
+#   Secret Manager; este pipeline troca a imagem e preserva a configuracao.
+
+substitutions:
+  _REGION: us-central1
+  _REPOSITORY: geopublish
+  _API_SERVICE: geopublish-api
+  _FRONTEND_SERVICE: geopublish-frontend
+  _WORKER_SERVICE: geopublish-worker-service
+  _WORKER_JOB: geopublish-worker-job
+
+steps:
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile.api
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_API_SERVICE}:${SHORT_SHA}
+      - .
+
+  - id: build-worker
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - Dockerfile.worker
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/geopublish-worker:${SHORT_SHA}
+      - .
+
+  - id: build-frontend
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -f
+      - frontend/Dockerfile
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_FRONTEND_SERVICE}:${SHORT_SHA}
+      - frontend
+
+  - id: push-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_API_SERVICE}:${SHORT_SHA}
+
+  - id: push-worker
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/geopublish-worker:${SHORT_SHA}
+
+  - id: push-frontend
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_FRONTEND_SERVICE}:${SHORT_SHA}
+
+  - id: deploy-api
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_API_SERVICE}
+      - --region=${_REGION}
+      - --platform=managed
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_API_SERVICE}:${SHORT_SHA}
+
+  - id: deploy-worker-service
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_WORKER_SERVICE}
+      - --region=${_REGION}
+      - --platform=managed
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/geopublish-worker:${SHORT_SHA}
+      - --set-env-vars=WORKER_MODE=service
+
+  - id: deploy-worker-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - ${_WORKER_JOB}
+      - --region=${_REGION}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/geopublish-worker:${SHORT_SHA}
+      - --set-env-vars=WORKER_MODE=job
+
+  - id: deploy-frontend
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_FRONTEND_SERVICE}
+      - --region=${_REGION}
+      - --platform=managed
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_FRONTEND_SERVICE}:${SHORT_SHA}
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_API_SERVICE}:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/geopublish-worker:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/${_FRONTEND_SERVICE}:${SHORT_SHA}

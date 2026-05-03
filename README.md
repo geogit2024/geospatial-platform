@@ -1,127 +1,151 @@
-# Geospatial Image Publishing Platform
+# GeoPublish
 
-OGC-ready platform for raster ingestion, GDAL processing, and WMS/WMTS/WCS
-publication via GeoServer. Designed for drone imagery and high-resolution
-raster datasets.
+Plataforma SaaS WebGIS para ingestao, processamento e publicacao de dados
+geoespaciais raster/vetor. O fluxo principal gera signed URLs para upload em
+GCS, processa arquivos com workers Python/GDAL/GeoPandas, publica camadas no
+GeoServer e expoe servicos OGC para QGIS, ArcGIS, WebGIS e clientes externos.
 
-## Architecture
+## Ambientes
 
+O projeto opera com dois ambientes:
+
+| Ambiente | Objetivo | Infraestrutura |
+| --- | --- | --- |
+| DEV | Desenvolvimento e validacao local | Docker Compose |
+| PROD | Producao real | Google Cloud |
+
+Nao ha ambiente intermediario no plano atual. O deploy em producao deve ser
+manual/controlado.
+
+## Arquitetura DEV
+
+```text
+Frontend Next.js
+  -> FastAPI
+  -> Redis Streams
+  -> Worker GDAL/GeoPandas
+  -> GCS raw/processed
+  -> GeoServer
+  -> PostGIS
 ```
-Client
-  │
-  ├── POST /api/upload/signed-url  →  API generates signed URL
-  │                                   Client uploads directly to MinIO
-  ├── POST /api/upload/confirm     →  API enqueues processing job
-  │
-  │   Redis Stream: image:uploaded
-  │        │
-  │   [Worker] GDAL Pipeline
-  │        ├── gdalwarp  → reproject to EPSG:4326
-  │        ├── gdaladdo  → build overviews/pyramids
-  │        └── gdal_translate → export as COG
-  │
-  │   Redis Stream: image:processed
-  │        │
-  │   [Worker] GeoServer REST API
-  │        └── register Coverage Store + Layer
-  │
-  └── GET /api/services/{id}/ogc  →  WMS / WMTS / WCS URLs
-```
 
-## Services
+Servicos no Docker Compose:
 
-| Service   | Port | Description                        |
-|-----------|------|------------------------------------|
-| API       | 8000 | FastAPI REST service               |
-| GeoServer | 8080 | OGC WMS/WMTS/WCS publication       |
-| MinIO     | 9000 | S3-compatible object storage       |
-| MinIO UI  | 9001 | MinIO web console                  |
-| PostgreSQL| 5432 | Metadata database (internal)       |
-| Redis     | 6379 | Event queue (internal)             |
+- `frontend`: Next.js com hot reload em `http://localhost:3000`
+- `api`: FastAPI com hot reload em `http://localhost:8000`
+- `worker`: consumidor Redis Streams em modo continuo
+- `postgres`: PostGIS local
+- `redis`: fila local
+- `geoserver`: OGC local em `http://localhost:8080/geoserver`
 
-## Quick Start
+Storage em DEV usa GCS real por padrao, para manter paridade com PROD. MinIO
+nao e mais o caminho padrao enquanto o codigo estiver GCS/ADC-first.
+
+## Preparar DEV
+
+1. Autentique o ADC local:
 
 ```bash
-# 1. Clone / copy and configure environment
-cp .env.example .env
-
-# 2. Start all services
-docker compose up --build -d
-
-# 3. Wait for GeoServer to fully start (~60s), then init workspace
-docker compose exec geoserver \
-  curl -u admin:geoserver -X POST http://localhost:8080/geoserver/rest/workspaces \
-  -H "Content-Type: application/json" \
-  -d '{"workspace":{"name":"geoimages"}}'
-
-# 4. API docs available at:
-#    http://localhost:8000/docs
+gcloud auth application-default login
 ```
 
-## API Endpoints
-
-### Upload
-
-```http
-POST /api/upload/signed-url
-Content-Type: application/json
-{"filename": "survey.tif", "content_type": "image/tiff"}
-
-→ {"image_id": "...", "upload_url": "http://...", "raw_key": "...", "expires_in": 3600}
-```
-
-```http
-# After uploading file directly to upload_url:
-POST /api/upload/confirm
-{"image_id": "..."}
-
-→ {"image_id": "...", "status": "uploaded", "message": "Processing queued"}
-```
-
-### Images
-
-```http
-GET  /api/images/             # List all images (supports ?status=published)
-GET  /api/images/{id}         # Get single image with status
-DELETE /api/images/{id}       # Delete image record
-```
-
-### OGC Services
-
-```http
-GET /api/services/{id}/ogc
-→ {
-    "layer": "geoimages:img_...",
-    "services": {
-      "wms": {"url": "...", "getcapabilities": "..."},
-      "wmts": {"url": "...", "getcapabilities": "..."},
-      "wcs": {"url": "...", "getcapabilities": "..."}
-    }
-  }
-```
-
-## Processing Status Flow
-
-```
-pending → uploading → uploaded → processing → processed → publishing → published
-                                                                   ↘ error
-```
-
-## Scaling Workers
+2. Crie os buckets de desenvolvimento, ou ajuste `env/.env.dev` para buckets
+existentes:
 
 ```bash
-# Scale to 4 worker replicas for parallel processing
-docker compose up -d --scale worker=4
+gcloud storage buckets create gs://geopublish-dev-raw --location=us-central1
+gcloud storage buckets create gs://geopublish-dev-processed --location=us-central1
 ```
 
-## Supported Input Formats
+3. Suba o stack:
 
-GeoTIFF, GeoTIFF (ECW, JP2), and any GDAL-supported raster format:
-`.tif`, `.tiff`, `.geotiff`, `.jp2`, `.ecw`, `.img`
+```bash
+docker compose up --build
+```
 
-## Production Notes
+4. Acesse:
 
-- Replace MinIO with GCS: set `STORAGE_BACKEND=gcs` and configure HMAC keys
-- GeoServer clustering: use shared NFS volume for `geoserver_data`
-- Redis: use Redis Cluster or managed service (Redis Cloud, Upstash)
-- Workers: deploy as Railway / Cloud Run jobs for serverless scale
+- Frontend: `http://localhost:3000`
+- API docs: `http://localhost:8000/docs`
+- GeoServer: `http://localhost:8080/geoserver`
+
+## Fluxo de Publicacao
+
+```text
+1. Usuario seleciona raster/vetor no frontend.
+2. API gera signed URL de upload.
+3. Browser envia arquivo direto para GCS raw.
+4. Frontend confirma upload na API.
+5. API publica evento no Redis Stream image:uploaded.
+6. Worker processa:
+   - raster: GDAL -> COG em EPSG:3857
+   - vetor: GeoPandas -> PostGIS
+7. Worker publica evento image:processed.
+8. Worker registra camada no GeoServer:
+   - raster: WMS / WMTS / WCS
+   - vetor: WMS / WFS
+9. API retorna URLs OGC ao frontend/cliente.
+```
+
+## PROD
+
+Componentes esperados em producao:
+
+- Frontend no Cloud Run
+- API FastAPI no Cloud Run
+- Worker em Cloud Run Service para fila continua
+- Worker em Cloud Run Job para execucao sob demanda
+- Cloud SQL PostgreSQL/PostGIS
+- GCS com bucket raw privado e processed para COGs
+- Redis gerenciado/externo
+- GeoServer dedicado
+- Secret Manager para segredos
+- Artifact Registry para imagens Docker
+
+## Deploy PROD
+
+O pipeline fica em `infra/cloudbuild/prod.yaml` e deve ser executado somente
+quando o deploy em producao for ordenado:
+
+```bash
+gcloud builds submit --config infra/cloudbuild/prod.yaml \
+  --substitutions=_REGION=us-central1,_REPOSITORY=geopublish
+```
+
+O pipeline:
+
+1. Builda API, worker e frontend.
+2. Publica imagens no Artifact Registry com tag `$SHORT_SHA`.
+3. Atualiza Cloud Run API.
+4. Atualiza Cloud Run worker service.
+5. Atualiza Cloud Run worker job.
+6. Atualiza Cloud Run frontend.
+
+Configuracoes sensiveis nao devem estar no pipeline. Use Secret Manager e
+variaveis ja configuradas nos servicos Cloud Run.
+
+## Estrutura
+
+```text
+/api        FastAPI, modelos, routers e servicos
+/worker     GDAL/GeoPandas, Redis consumers e publicacao GeoServer
+/frontend   Next.js
+/env        exemplos de configuracao DEV/PROD
+/infra      pipeline e infraestrutura cloud
+/geoserver  scripts auxiliares
+/tests      testes automatizados
+```
+
+## Testes
+
+```bash
+pytest
+```
+
+Para o frontend:
+
+```bash
+cd frontend
+npm ci
+npm run build
+```

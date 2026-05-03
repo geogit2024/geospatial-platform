@@ -1,8 +1,11 @@
 # Environment
 .env
 .env.local
+.env.*
 .env.production
 *.env
+!env/
+!env/*.example
 
 # Python
 __pycache__/
@@ -16,7 +19,6 @@ dist/
 build/
 venv/
 .venv/
-env/
 .cache/
 
 # Node (WebGIS frontend if added later)
