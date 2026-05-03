@@ -11,6 +11,8 @@
 
 x-common-env: &common-env
   ENVIRONMENT: dev
+  GCP_PROJECT_ID: geopublish
+  GOOGLE_CLOUD_PROJECT: geopublish
   DATABASE_URL: postgresql+asyncpg://geo:geo@postgres:5432/geodb
   DATABASE_SYNC_URL: postgresql://geo:geo@postgres:5432/geodb
   REDIS_URL: redis://redis:6379/0
@@ -93,6 +95,7 @@ services:
     environment:
       <<: *common-env
       PORT: "8000"
+      GOOGLE_APPLICATION_CREDENTIALS: /home/appuser/.config/gcloud/legacy_credentials/upload@funrio.iam.gserviceaccount.com/adc.json
       API_SECRET_KEY: changeme-dev
       CORS_ORIGINS: http://localhost:3000,http://localhost:8000,http://localhost:8080
     ports:
@@ -117,6 +120,7 @@ services:
     environment:
       <<: *common-env
       PORT: "8081"
+      GOOGLE_APPLICATION_CREDENTIALS: /home/worker/.config/gcloud/legacy_credentials/upload@funrio.iam.gserviceaccount.com/adc.json
       WORKER_MODE: service
       WORKER_ENABLE_HEALTH_SERVER: "true"
       WORKER_ENABLE_STARTUP_SYNC: "true"

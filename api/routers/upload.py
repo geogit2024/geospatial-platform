@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from google.auth import exceptions as google_auth_exceptions
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -211,6 +212,22 @@ async def get_signed_upload_url(
 
     image_id = str(uuid.uuid4())
     raw_key = f"{image_id}/original{ext}"
+    try:
+        upload_url = generate_upload_url(raw_key, content_type)
+    except google_auth_exceptions.GoogleAuthError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Credenciais Google Cloud indisponiveis para gerar signed URL. "
+                "No DEV, execute 'gcloud auth application-default login' no host "
+                "e reinicie o container da API."
+            ),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Falha ao gerar signed URL no GCS: {exc}",
+        ) from exc
 
     image = Image(
         id=image_id,
@@ -228,8 +245,6 @@ async def get_signed_upload_url(
         setattr(image, key, value)
     db.add(image)
     await db.commit()
-
-    upload_url = generate_upload_url(raw_key, content_type)
 
     return UploadResponse(
         image_id=image_id,

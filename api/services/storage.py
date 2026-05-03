@@ -18,6 +18,7 @@ from config import get_settings
 settings = get_settings()
 
 _gcs_client = None
+_GCP_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 
 
 def get_gcs() -> storage.Client:
@@ -42,22 +43,26 @@ def generate_upload_url_for_bucket(
     expires_in_seconds: int | None = None,
 ) -> str:
     """Generate a v4 signed PUT URL so browsers can upload directly to GCS."""
-    credentials, _ = default()
+    credentials, _ = default(scopes=_GCP_SCOPES)
     credentials.refresh(google_requests.Request())
 
     client = get_gcs()
     blob = client.bucket(bucket_name).blob(key)
-
-    url = blob.generate_signed_url(
-        version="v4",
-        expiration=datetime.timedelta(
+    signed_url_kwargs = {
+        "version": "v4",
+        "expiration": datetime.timedelta(
             seconds=expires_in_seconds or settings.signed_url_expiry_seconds
         ),
-        method="PUT",
-        content_type=content_type,
-        service_account_email=credentials.service_account_email,
-        access_token=credentials.token,
-    )
+        "method": "PUT",
+        "content_type": content_type,
+    }
+    if hasattr(credentials, "signer_email"):
+        signed_url_kwargs["credentials"] = credentials
+    else:
+        signed_url_kwargs["service_account_email"] = credentials.service_account_email
+        signed_url_kwargs["access_token"] = credentials.token
+
+    url = blob.generate_signed_url(**signed_url_kwargs)
     return url
 
 
@@ -72,19 +77,23 @@ def generate_upload_url(key: str, content_type: str = "image/tiff") -> str:
 
 def generate_download_url(bucket: str, key: str) -> str:
     """Generate a v4 signed GET URL for client download."""
-    credentials, _ = default()
+    credentials, _ = default(scopes=_GCP_SCOPES)
     credentials.refresh(google_requests.Request())
 
     client = get_gcs()
     blob = client.bucket(bucket).blob(key)
+    signed_url_kwargs = {
+        "version": "v4",
+        "expiration": datetime.timedelta(seconds=settings.signed_url_expiry_seconds),
+        "method": "GET",
+    }
+    if hasattr(credentials, "signer_email"):
+        signed_url_kwargs["credentials"] = credentials
+    else:
+        signed_url_kwargs["service_account_email"] = credentials.service_account_email
+        signed_url_kwargs["access_token"] = credentials.token
 
-    url = blob.generate_signed_url(
-        version="v4",
-        expiration=datetime.timedelta(seconds=settings.signed_url_expiry_seconds),
-        method="GET",
-        service_account_email=credentials.service_account_email,
-        access_token=credentials.token,
-    )
+    url = blob.generate_signed_url(**signed_url_kwargs)
     return url
 
 
