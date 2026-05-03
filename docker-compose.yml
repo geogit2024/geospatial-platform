@@ -142,7 +142,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    command: npm run dev -- -H 0.0.0.0 -p 3000
+      target: dev
     environment:
       NODE_ENV: development
       DEV_API_URL: http://api:8000
