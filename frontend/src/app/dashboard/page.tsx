@@ -528,44 +528,13 @@ export default function DashboardPage() {
                   {ogcLoading ? (
                     <p className="text-sm text-[#7f97b5]">Carregando servicos...</p>
                   ) : ogc ? (
-                    <div className="space-y-4">
-                      <OGCService
-                        label="WMS"
-                        url={ogc.services.wms.getcapabilities}
-                        example={ogc.services.wms.getmap_example}
-                        serviceUrl={ogc.services.wms.url}
-                      />
-                      <OGCService
-                        label="WMTS"
-                        url={ogc.services.wmts.getcapabilities}
-                        serviceUrl={ogc.services.wmts.url}
-                      />
-                      <OGCService
-                        label="WCS"
-                        url={ogc.services.wcs.getcapabilities}
-                        serviceUrl={ogc.services.wcs.url}
-                      />
-
-                      <div className="mt-2 grid grid-cols-2 gap-2">
-                        <button
-                          onClick={() =>
-                            router.push(`/map?layer=${selected.layer_name}&imageId=${selected.id}`)
-                          }
-                          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#1d4f7a] text-[#dff4ff] text-sm font-medium hover:bg-[#25608f]"
-                        >
-                          <Map className="w-4 h-4" />
-                          Visualizar no Mapa
-                        </button>
-                        <button
-                          onClick={() => handleDownloadRaw(selected)}
-                          disabled={downloadingId === selected.id}
-                          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-[#2a3f58] bg-[#13263d] text-[#dff4ff] text-sm font-medium hover:bg-[#1a324f] disabled:opacity-60"
-                        >
-                          <Download className="w-4 h-4" />
-                          {downloadingId === selected.id ? "Gerando..." : "Download dado"}
-                        </button>
-                      </div>
-                    </div>
+                    <OGCServicesPanel
+                      ogc={ogc}
+                      selected={selected}
+                      onMap={() => router.push(`/map?layer=${selected.layer_name}&imageId=${selected.id}`)}
+                      onDownload={() => handleDownloadRaw(selected)}
+                      downloading={downloadingId === selected.id}
+                    />
                   ) : (
                     <p className="text-sm text-[#7f97b5]">Servicos nao disponiveis.</p>
                   )}
@@ -598,6 +567,75 @@ function CopyField({ value }: { value: string }) {
   );
 }
 
+function OGCServicesPanel({
+  ogc,
+  selected,
+  onMap,
+  onDownload,
+  downloading,
+}: {
+  ogc: OGCServices;
+  selected: ImageRecord;
+  onMap: () => void;
+  onDownload: () => void;
+  downloading: boolean;
+}) {
+  const isVector =
+    selected.asset_kind === "vector" ||
+    (selected.asset_kind == null && selected.wfs_url != null) ||
+    (selected.asset_kind == null && selected.filename?.toLowerCase().includes(".zip"));
+
+  return (
+    <div className="space-y-4">
+      <OGCService
+        label="WMS"
+        url={ogc.services.wms.getcapabilities}
+        example={ogc.services.wms.getmap_example}
+        exampleLabel="GetMap exemplo"
+        serviceUrl={ogc.services.wms.url}
+      />
+      <OGCService
+        label="WFS"
+        url={ogc.services.wfs.getcapabilities}
+        example={ogc.services.wfs.getfeature_example}
+        exampleLabel="GetFeature exemplo"
+        serviceUrl={ogc.services.wfs.url}
+      />
+      {!isVector && (
+        <OGCService
+          label="WMTS"
+          url={ogc.services.wmts.getcapabilities}
+          serviceUrl={ogc.services.wmts.url}
+        />
+      )}
+      {!isVector && (
+        <OGCService
+          label="WCS"
+          url={ogc.services.wcs.getcapabilities}
+          serviceUrl={ogc.services.wcs.url}
+        />
+      )}
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <button
+          onClick={onMap}
+          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#1d4f7a] text-[#dff4ff] text-sm font-medium hover:bg-[#25608f]"
+        >
+          <Map className="w-4 h-4" />
+          Visualizar no Mapa
+        </button>
+        <button
+          onClick={onDownload}
+          disabled={downloading}
+          className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-[#2a3f58] bg-[#13263d] text-[#dff4ff] text-sm font-medium hover:bg-[#1a324f] disabled:opacity-60"
+        >
+          <Download className="w-4 h-4" />
+          {downloading ? "Gerando..." : "Download dado"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -611,11 +649,13 @@ function OGCService({
   label,
   url,
   example,
+  exampleLabel = "GetMap exemplo",
   serviceUrl,
 }: {
   label: string;
   url: string;
   example?: string;
+  exampleLabel?: string;
   serviceUrl?: string;
 }) {
   return (
@@ -638,7 +678,7 @@ function OGCService({
           className="flex items-center gap-1 text-xs text-[#7f97b5] hover:text-[#dbe8fb] hover:underline mt-0.5 break-all"
         >
           <ExternalLink className="w-3 h-3 shrink-0" />
-          GetMap exemplo
+          {exampleLabel}
         </a>
       )}
       {serviceUrl && (

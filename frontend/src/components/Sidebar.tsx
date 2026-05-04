@@ -73,7 +73,7 @@ export default function Sidebar() {
 
       <div className="px-5 py-4 border-t border-[#1e2a3f] text-xs text-[#7f98b7]">
         <p className="truncate">{userName}</p>
-        <p className="mt-1">OGC WMS - WMTS - WCS</p>
+        <p className="mt-1">OGC WMS - WFS - WMTS - WCS</p>
       </div>
     </aside>
   );
