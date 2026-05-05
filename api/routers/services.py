@@ -499,8 +499,8 @@ async def get_ogc_services(
                 ),
             },
             "wfs": {
-                "url": wfs,
-                "getcapabilities": f"{wfs}?service=WFS&version=2.0.0&request=GetCapabilities",
+                "url": wfs_proxy,
+                "getcapabilities": f"{wfs_proxy}?service=WFS&version=2.0.0&request=GetCapabilities",
                 "getfeature_example": (
                     f"{wfs_proxy}?service=WFS&version=2.0.0&request=GetFeature"
                     f"&typenames={image.layer_name}&outputFormat=application/json"
