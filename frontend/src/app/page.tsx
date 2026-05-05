@@ -66,7 +66,10 @@ export default function LandingPage() {
             organizadas e prontas para usar
           </h1>
           <p className="text-lg text-[#9eb9d9] mb-10 max-w-2xl mx-auto leading-relaxed">
-            Transforme arquivos complexos e imagens de satélite em visualizações prontas para compartilhar.
+            <span className="block font-semibold text-[#e6f1ff] mb-2">
+              Simples para você publicar. Potente para o seu negócio funcionar.
+            </span>
+            Leve seus dados geográficos e imagens de satélite para a web com a tranquilidade de uma infraestrutura de alto desempenho e disponibilidade total.
           </p>
           <div className="flex flex-wrap justify-center gap-4">
             <Link
