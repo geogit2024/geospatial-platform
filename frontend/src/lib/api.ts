@@ -31,6 +31,7 @@ export interface ImageRecord {
 export interface OGCServices {
   image_id: string;
   layer: string;
+  asset_kind: string | null;
   services: {
     wms: { url: string; getcapabilities: string; getmap_example: string };
     wfs: { url: string; getcapabilities: string; getfeature_example: string };

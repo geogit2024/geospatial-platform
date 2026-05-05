@@ -442,7 +442,9 @@ async def get_ogc_services(
     )
     # WMS must be image-specific so clients (ArcGIS) see only this layer.
     wms = _public_ogc_urls(request, image.id)["wms"]
-    wfs = _public_ogc_urls(request, image.id)["wfs"]
+    wfs_proxy = _public_ogc_urls(request, image.id)["wfs"]
+    workspace = image.workspace or settings.geoserver_workspace
+    wfs = _public_geoserver_service_url(image.wfs_url, f"{workspace}/wfs")
     wmts = _public_geoserver_service_url(image.wmts_url, "gwc/service/wmts")
     wcs = _public_geoserver_service_url(
         image.wcs_url, f"{settings.geoserver_workspace}/wcs"
@@ -451,6 +453,7 @@ async def get_ogc_services(
     return {
         "image_id": image.id,
         "layer": image.layer_name,
+        "asset_kind": image.asset_kind,
         "services": {
             "wms": {
                 "url": wms,
@@ -465,7 +468,7 @@ async def get_ogc_services(
                 "url": wfs,
                 "getcapabilities": f"{wfs}?service=WFS&version=2.0.0&request=GetCapabilities",
                 "getfeature_example": (
-                    f"{wfs}?service=WFS&version=2.0.0&request=GetFeature"
+                    f"{wfs_proxy}?service=WFS&version=2.0.0&request=GetFeature"
                     f"&typenames={image.layer_name}&outputFormat=application/json"
                 ),
             },
