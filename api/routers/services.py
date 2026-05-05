@@ -428,6 +428,40 @@ def _rewrite_wms_capabilities_xml(
     return ET.tostring(root, encoding="unicode")
 
 
+_WFS_NAMESPACES = {
+    "wfs": "http://www.opengis.net/wfs/2.0",
+    "ows": "http://www.opengis.net/ows/1.1",
+    "fes": "http://www.opengis.net/fes/2.0",
+    "gml": "http://www.opengis.net/gml/3.2",
+    "xlink": "http://www.w3.org/1999/xlink",
+    "xs": "http://www.w3.org/2001/XMLSchema",
+    "xsi": "http://www.w3.org/2001/XMLSchema-instance",
+}
+
+
+def _filter_wfs_capabilities_to_layer(xml_text: str, layer_name: str) -> str:
+    """Remove all FeatureTypes except the target layer from WFS GetCapabilities."""
+    for prefix, uri in _WFS_NAMESPACES.items():
+        ET.register_namespace(prefix, uri)
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return xml_text
+    local_target = layer_name.split(":")[-1]
+    wfs_ns = "http://www.opengis.net/wfs/2.0"
+    ftl = root.find(f"{{{wfs_ns}}}FeatureTypeList")
+    if ftl is None:
+        return xml_text
+    to_remove = [
+        ft for ft in ftl.findall(f"{{{wfs_ns}}}FeatureType")
+        if (ft.find(f"{{{wfs_ns}}}Name") is None
+            or (ft.find(f"{{{wfs_ns}}}Name").text or "").split(":")[-1] != local_target)
+    ]
+    for ft in to_remove:
+        ftl.remove(ft)
+    return ET.tostring(root, encoding="unicode")
+
+
 @router.get("/{image_id}/ogc")
 async def get_ogc_services(
     image_id: str,
@@ -681,7 +715,22 @@ async def wfs_proxy(
     )
     if request_name == "getfeature":
         params.setdefault("typenames", image.layer_name)
-    return await _proxy_get(wfs_endpoint, params)
+    proxied = await _proxy_get(wfs_endpoint, params)
+    if request_name != "getcapabilities":
+        return proxied
+    content_type = proxied.headers.get("content-type", "")
+    if "xml" not in content_type.lower():
+        return proxied
+    try:
+        text = proxied.body.decode("utf-8")
+    except UnicodeDecodeError:
+        text = proxied.body.decode("latin-1")
+    filtered = _filter_wfs_capabilities_to_layer(text, image.layer_name)
+    headers: dict[str, str] = {"content-type": content_type or "text/xml; charset=UTF-8"}
+    cache_control = proxied.headers.get("cache-control")
+    if cache_control:
+        headers["cache-control"] = cache_control
+    return Response(content=filtered, status_code=proxied.status_code, headers=headers)
 
 
 @router.get("/{image_id}/wcs-proxy")
