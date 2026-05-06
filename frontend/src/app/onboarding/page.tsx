@@ -47,6 +47,14 @@ export default function OnboardingPage() {
       return;
     }
 
+    const result = addInvitedUser({ name: normalizedName, email: normalizedEmail, role });
+
+    if (!result.ok) {
+      setError(result.error ?? "Nao foi possivel adicionar usuario.");
+      setSending(false);
+      return;
+    }
+
     try {
       await sendUserInviteEmail({
         company_name: company.name,
@@ -55,16 +63,13 @@ export default function OnboardingPage() {
         invitee_email: normalizedEmail,
         role,
       });
-    } catch (inviteError: unknown) {
-      setError(inviteError instanceof Error ? inviteError.message : "Nao foi possivel enviar o convite por e-mail.");
-      setSending(false);
-      return;
-    }
-
-    const result = addInvitedUser({ name: normalizedName, email: normalizedEmail, role });
-
-    if (!result.ok) {
-      setError(result.error ?? "Nao foi possivel adicionar usuario.");
+    } catch {
+      // Usuario ja foi salvo; avisa que o e-mail falhou mas nao reverte
+      setSuccess("Usuario adicionado. O convite por e-mail nao foi enviado — verifique a configuracao SMTP.");
+      setUsers(getInvitedUsers());
+      setName("");
+      setEmail("");
+      setRole("Editor");
       setSending(false);
       return;
     }

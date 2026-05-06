@@ -15,12 +15,12 @@ export default function AcessoPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
     setError(null);
 
-    const result = login(email, password);
+    const result = await login(email, password);
 
     if (!result.ok) {
       setError(result.error ?? "Nao foi possivel acessar.");

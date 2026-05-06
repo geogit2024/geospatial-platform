@@ -51,6 +51,11 @@ const ACCOUNT_KEY = "geopublish_accounts_v1";
 const SESSION_KEY = "geopublish_session_v1";
 const IMAGE_OWNERS_KEY = "geopublish_image_owners_v1";
 const PENDING_PASSWORD_MARKER = "convite-pendente";
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000; // 8 hours
+const PW_HASH_PREFIX = "sha256:";
+const PW_SALT = "geopublish_pw_v1_";
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 function isBrowser() {
   return typeof window !== "undefined";
@@ -62,7 +67,6 @@ function normalizeEmail(value: string): string {
 
 function readJson<T>(key: string): T | null {
   if (!isBrowser()) return null;
-
   try {
     const raw = localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as T) : null;
@@ -99,6 +103,32 @@ function updateSessionEmail(oldEmail: string, newEmail: string) {
   writeJson(SESSION_KEY, { ...current, email: normalizeEmail(newEmail) });
 }
 
+async function hashPassword(password: string): Promise<string> {
+  if (typeof crypto === "undefined" || !crypto.subtle) {
+    return `plain:${btoa(password)}`;
+  }
+  const encoder = new TextEncoder();
+  const data = encoder.encode(PW_SALT + password);
+  const buffer = await crypto.subtle.digest("SHA-256", data);
+  const hex = Array.from(new Uint8Array(buffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `${PW_HASH_PREFIX}${hex}`;
+}
+
+async function verifyPassword(input: string, stored: string): Promise<boolean> {
+  if (stored === PENDING_PASSWORD_MARKER) return false;
+  // Legacy plaintext — accept and will be upgraded on next save
+  if (!stored.startsWith(PW_HASH_PREFIX) && !stored.startsWith("plain:")) {
+    return stored === input;
+  }
+  if (stored.startsWith("plain:")) {
+    return stored.slice(6) === btoa(input);
+  }
+  const hashed = await hashPassword(input);
+  return hashed === stored;
+}
+
 export function getAccount(): AccountStore | null {
   return readJson<AccountStore>(ACCOUNT_KEY);
 }
@@ -108,19 +138,31 @@ export function getSession(): SessionStore | null {
 }
 
 export function isAuthenticated(): boolean {
-  return Boolean(getSession());
+  const session = getSession();
+  if (!session) return false;
+  const age = Date.now() - new Date(session.startedAt).getTime();
+  if (age > SESSION_TTL_MS) {
+    if (isBrowser()) localStorage.removeItem(SESSION_KEY);
+    return false;
+  }
+  return true;
 }
 
-export function registerCompanyAndAdmin(payload: RegistrationPayload): {
+export async function registerCompanyAndAdmin(payload: RegistrationPayload): Promise<{
   ok: boolean;
   error?: string;
-} {
+}> {
   const normalizedEmail = normalizeEmail(payload.admin.email);
-  const account = getAccount();
 
-  if (account?.users.some((user) => normalizeEmail(user.email) === normalizedEmail)) {
-    return { ok: false, error: "Este e-mail ja esta cadastrado." };
+  if (!EMAIL_REGEX.test(normalizedEmail)) {
+    return { ok: false, error: "Informe um e-mail valido." };
   }
+
+  if (!payload.admin.name.trim()) {
+    return { ok: false, error: "Informe o nome do administrador." };
+  }
+
+  const hashedPassword = await hashPassword(payload.admin.password);
 
   const nextAccount: AccountStore = {
     company: payload.company,
@@ -128,11 +170,10 @@ export function registerCompanyAndAdmin(payload: RegistrationPayload): {
       {
         name: payload.admin.name.trim(),
         email: normalizedEmail,
-        password: payload.admin.password,
+        password: hashedPassword,
         role: "Admin",
         invitedAt: new Date().toISOString(),
       },
-      ...(account?.users ?? []).filter((user) => user.role !== "Admin"),
     ],
   };
 
@@ -145,7 +186,7 @@ export function registerCompanyAndAdmin(payload: RegistrationPayload): {
   return { ok: true };
 }
 
-export function login(email: string, password: string): { ok: boolean; error?: string } {
+export async function login(email: string, password: string): Promise<{ ok: boolean; error?: string }> {
   const account = getAccount();
   if (!account) {
     return { ok: false, error: "Nenhuma empresa cadastrada. Crie sua conta primeiro." };
@@ -154,8 +195,22 @@ export function login(email: string, password: string): { ok: boolean; error?: s
   const normalizedEmail = normalizeEmail(email);
   const user = account.users.find((item) => normalizeEmail(item.email) === normalizedEmail);
 
-  if (!user || user.password !== password) {
+  if (!user) {
     return { ok: false, error: "Credenciais invalidas. Verifique e tente novamente." };
+  }
+
+  const match = await verifyPassword(password, user.password);
+  if (!match) {
+    return { ok: false, error: "Credenciais invalidas. Verifique e tente novamente." };
+  }
+
+  // Upgrade legacy plaintext password on successful login
+  if (!user.password.startsWith(PW_HASH_PREFIX) && !user.password.startsWith("plain:")) {
+    const upgraded = await hashPassword(password);
+    const upgradedUsers = account.users.map((u) =>
+      normalizeEmail(u.email) === normalizedEmail ? { ...u, password: upgraded } : u
+    );
+    writeAccount({ ...account, users: upgradedUsers });
   }
 
   writeJson(SESSION_KEY, {
@@ -174,7 +229,6 @@ export function logout() {
 export function getCurrentUser(): UserProfile | null {
   const session = getSession();
   const account = getAccount();
-
   if (!session || !account) return null;
   return account.users.find((user) => normalizeEmail(user.email) === normalizeEmail(session.email)) ?? null;
 }
@@ -195,12 +249,13 @@ export function addInvitedUser(input: {
   password?: string;
 }): { ok: boolean; error?: string } {
   const account = getAccount();
-
-  if (!account) {
-    return { ok: false, error: "Empresa nao encontrada." };
-  }
+  if (!account) return { ok: false, error: "Empresa nao encontrada." };
 
   const normalizedEmail = normalizeEmail(input.email);
+
+  if (!EMAIL_REGEX.test(normalizedEmail)) {
+    return { ok: false, error: "Informe um e-mail valido." };
+  }
 
   if (account.users.some((user) => normalizeEmail(user.email) === normalizedEmail)) {
     return { ok: false, error: "Usuario ja cadastrado com este e-mail." };
@@ -221,7 +276,6 @@ export function addInvitedUser(input: {
   };
 
   writeAccount(nextAccount);
-
   return { ok: true };
 }
 
@@ -234,8 +288,7 @@ export function updateUserRole(email: string, role: UserRole): { ok: boolean; er
   const index = users.findIndex((user) => normalizeEmail(user.email) === normalizedEmail);
   if (index < 0) return { ok: false, error: "Usuario nao encontrado." };
 
-  const oldUser = users[index];
-  users[index] = { ...oldUser, role };
+  users[index] = { ...users[index], role };
 
   if (!ensureAdminPresence(users)) {
     return { ok: false, error: "A empresa precisa manter pelo menos um Admin." };
@@ -255,6 +308,10 @@ export function updateUserProfile(payload: UpdateUserPayload): { ok: boolean; er
 
   if (!nextName) return { ok: false, error: "Nome e obrigatorio." };
 
+  if (!EMAIL_REGEX.test(nextEmail)) {
+    return { ok: false, error: "Informe um e-mail valido." };
+  }
+
   const users = [...account.users];
   const targetIndex = users.findIndex((user) => normalizeEmail(user.email) === currentEmail);
   if (targetIndex < 0) return { ok: false, error: "Usuario nao encontrado." };
@@ -264,12 +321,7 @@ export function updateUserProfile(payload: UpdateUserPayload): { ok: boolean; er
   );
   if (duplicated) return { ok: false, error: "Ja existe outro usuario com este e-mail." };
 
-  users[targetIndex] = {
-    ...users[targetIndex],
-    name: nextName,
-    email: nextEmail,
-    role: payload.role,
-  };
+  users[targetIndex] = { ...users[targetIndex], name: nextName, email: nextEmail, role: payload.role };
 
   if (!ensureAdminPresence(users)) {
     return { ok: false, error: "A empresa precisa manter pelo menos um Admin." };
@@ -303,7 +355,7 @@ export function removeUser(email: string): { ok: boolean; error?: string } {
   return { ok: true };
 }
 
-export function resetUserPassword(email: string, newPassword: string): { ok: boolean; error?: string } {
+export async function resetUserPassword(email: string, newPassword: string): Promise<{ ok: boolean; error?: string }> {
   const account = getAccount();
   if (!account) return { ok: false, error: "Empresa nao encontrada." };
 
@@ -316,7 +368,7 @@ export function resetUserPassword(email: string, newPassword: string): { ok: boo
     return { ok: false, error: "A nova senha deve ter no minimo 8 caracteres." };
   }
 
-  users[index] = { ...users[index], password: newPassword };
+  users[index] = { ...users[index], password: await hashPassword(newPassword) };
   writeAccount({ ...account, users });
   return { ok: true };
 }
@@ -324,17 +376,13 @@ export function resetUserPassword(email: string, newPassword: string): { ok: boo
 export function getInvitedUsers(): UserProfile[] {
   const account = getAccount();
   if (!account) return [];
-
-  return [...account.users].sort((a, b) => {
-    return new Date(b.invitedAt).getTime() - new Date(a.invitedAt).getTime();
-  });
+  return [...account.users].sort((a, b) => new Date(b.invitedAt).getTime() - new Date(a.invitedAt).getTime());
 }
 
 export function registerImageOwner(imageId: string, email?: string): void {
   if (!imageId.trim()) return;
   const ownerEmail = normalizeEmail(email ?? getCurrentUser()?.email ?? "");
   if (!ownerEmail) return;
-
   const owners = getImageOwners();
   owners[imageId] = ownerEmail;
   writeImageOwners(owners);

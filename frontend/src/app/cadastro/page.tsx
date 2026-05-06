@@ -76,7 +76,7 @@ export default function CadastroPage() {
     const normalizedAdminEmail = adminEmail.trim().toLowerCase();
     const normalizedAdminName = adminName.trim();
 
-    const result = registerCompanyAndAdmin({
+    const result = await registerCompanyAndAdmin({
       company: {
         name: normalizedCompanyName,
         segment,
@@ -119,8 +119,8 @@ export default function CadastroPage() {
           Configure seu workspace geoespacial em minutos e acesse suas imagens em 3 cliques.
         </p>
 
-        <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {[1, 2, 3].map((value) => (
+        <div className="mt-5 grid grid-cols-2 gap-2">
+          {[1, 2].map((value) => (
             <div
               key={value}
               className={`rounded-lg border px-3 py-2 text-center text-xs font-semibold ${

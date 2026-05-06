@@ -195,13 +195,13 @@ export default function UsuariosPage() {
     setSuccess("Usuario removido.");
   };
 
-  const onResetAccess = (email: string) => {
+  const onResetAccess = async (email: string) => {
     clearMessages();
     const target = users.find((user) => user.email === email);
     if (!target) return;
 
     const tempPassword = generateTemporaryPassword();
-    const result = resetUserPassword(email, tempPassword);
+    const result = await resetUserPassword(email, tempPassword);
     if (!result.ok) {
       setError(result.error ?? "Nao foi possivel redefinir o acesso.");
       return;
