@@ -58,7 +58,7 @@ export default function LandingPage() {
             />
           </div>
           <span className="inline-flex rounded-full border border-[#2d4f78] bg-[#10243e] px-3 py-1 text-xs font-semibold text-[#9bd6ff] mb-6">
-            Plataforma WebGIS para operação corporativa
+            Agilidade: do arquivo ao mapa em segundos.
           </span>
           <h1 className="text-4xl sm:text-5xl font-black leading-tight text-[#e6f1ff] mb-6">
             Suas imagens de satélite,
