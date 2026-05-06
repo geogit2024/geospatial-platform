@@ -110,6 +110,7 @@ class ImageDownloadResponse(BaseModel):
 @router.get("/", response_model=list[ImageResponse])
 async def list_images(
     status: Optional[str] = Query(None),
+    tenant_id: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -117,6 +118,8 @@ async def list_images(
     q = select(Image).order_by(Image.created_at.desc()).limit(limit).offset(offset)
     if status:
         q = q.where(Image.status == status)
+    if tenant_id:
+        q = q.where(Image.tenant_id == tenant_id)
     result = await db.execute(q)
     return [ImageResponse.from_orm(img) for img in result.scalars()]
 

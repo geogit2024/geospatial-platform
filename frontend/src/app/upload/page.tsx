@@ -4,7 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, FileImage, Loader2, Upload, XCircle } from "lucide-react";
 
-import { registerImageOwner } from "@/lib/auth";
+import { getTenantId, registerImageOwner } from "@/lib/auth";
 import {
   acceptUploadCostEstimate,
   confirmUpload,
@@ -194,7 +194,8 @@ export default function UploadPage() {
       const { image_id, upload_url, content_type } = await requestSignedUrl(
         file.name,
         file.type || "application/octet-stream",
-        file.size
+        file.size,
+        getTenantId()
       );
       setImageId(image_id);
 

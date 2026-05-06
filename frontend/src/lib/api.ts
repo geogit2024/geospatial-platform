@@ -294,8 +294,11 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   return r.json();
 }
 
-export async function getImages(status?: string): Promise<ImageRecord[]> {
-  const qs = status ? `?status=${status}` : "";
+export async function getImages(status?: string, tenantId?: string): Promise<ImageRecord[]> {
+  const query = new URLSearchParams();
+  if (status) query.set("status", status);
+  if (tenantId) query.set("tenant_id", tenantId);
+  const qs = query.toString() ? `?${query.toString()}` : "";
   return req<ImageRecord[]>(`/api/images/${qs}`);
 }
 
@@ -373,11 +376,12 @@ export async function cleanupUploadCostEstimateSessions(input?: {
 export async function requestSignedUrl(
   filename: string,
   contentType: string,
-  sizeBytes?: number
+  sizeBytes?: number,
+  tenantId?: string
 ): Promise<{ image_id: string; upload_url: string; raw_key: string; content_type: string }> {
   return req("/api/upload/signed-url", {
     method: "POST",
-    body: JSON.stringify({ filename, content_type: contentType, size_bytes: sizeBytes }),
+    body: JSON.stringify({ filename, content_type: contentType, size_bytes: sizeBytes, tenant_id: tenantId }),
   });
 }
 

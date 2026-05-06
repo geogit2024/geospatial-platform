@@ -32,7 +32,7 @@ import StatusBadge from "@/components/StatusBadge";
 import StorageMetrics from "@/components/metrics/StorageMetrics";
 import CostMetrics from "@/components/metrics/CostMetrics";
 import UploadCostEstimateMetrics from "@/components/metrics/UploadCostEstimateMetrics";
-import { getCurrentUser, getImageOwner } from "@/lib/auth";
+import { getCurrentUser, getImageOwner, getTenantId } from "@/lib/auth";
 
 const POLL_MS_VISIBLE_IDLE = 30_000;
 const POLL_MS_VISIBLE_ACTIVE = 10_000;
@@ -84,7 +84,7 @@ export default function DashboardPage() {
 
   const fetchImages = useCallback(async () => {
     try {
-      const data = await getImages();
+      const data = await getImages(undefined, getTenantId());
       setImages(data);
       setError(null);
     } catch (e: unknown) {

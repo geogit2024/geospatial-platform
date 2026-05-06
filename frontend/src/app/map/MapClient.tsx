@@ -1,6 +1,7 @@
 ﻿"use client";
 import { useEffect, useRef, useState } from "react";
 import { getImages, type ImageRecord } from "@/lib/api";
+import { getTenantId } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import StatusBadge from "@/components/StatusBadge";
 import { Layers, RefreshCw, Eye, EyeOff } from "lucide-react";
@@ -62,7 +63,7 @@ export default function MapClient({
     setLoadingLayers(true);
 
     try {
-      const images = await getImages("published");
+      const images = await getImages("published", getTenantId());
       const nextLayers: LayerState[] = [];
 
       for (const img of images) {

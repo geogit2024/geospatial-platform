@@ -69,6 +69,7 @@ class UploadRequest(BaseModel):
     filename: str
     content_type: str = "image/tiff"
     size_bytes: int | None = None
+    tenant_id: str | None = None
 
 
 class UploadResponse(BaseModel):
@@ -231,7 +232,7 @@ async def get_signed_upload_url(
 
     image = Image(
         id=image_id,
-        tenant_id=settings.default_tenant_id,
+        tenant_id=request.tenant_id or settings.default_tenant_id,
         filename=request.filename,
         original_key=raw_key,
         status=ProcessingStatus.UPLOADING,

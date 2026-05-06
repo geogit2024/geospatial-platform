@@ -373,6 +373,18 @@ export async function resetUserPassword(email: string, newPassword: string): Pro
   return { ok: true };
 }
 
+export function getTenantId(): string {
+  const account = getAccount();
+  if (!account) return "default";
+  return (
+    account.company.name
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "default"
+  );
+}
+
 export function getInvitedUsers(): UserProfile[] {
   const account = getAccount();
   if (!account) return [];
